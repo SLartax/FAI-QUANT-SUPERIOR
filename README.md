@@ -2,126 +2,121 @@
 
 ## Sistema di Trading Algoritmico Overnight su FIB (FTSE MIB Futures)
 
-**Status**: Operativo con GitHub Actions ✅
-**Esecuzione**: Automatica ogni giorno feriale alle 19:00 CET  
-**Segnali**: Inviati a Telegram anche con PC spento
+**Status**: ✅ Operativo con GitHub Actions  
+**Notifiche**: 📧 Email (Gmail SMTP)  
+**Esecuzione**: Automatica ogni giorno feriale alle 19:00 CET via GitHub Actions  
+**Email ricevente**: pioggiamarrone@gmail.com  
 
 ---
 
 ## 🎯 Caratteristiche
 
-- ✅ Analisi automatica del FTSE MIB (FIB1!)
-- ✅ Calcolo segnali di trading basati su volatilità e trend
-- ✅ Invio notifiche a Telegram in tempo reale
-- ✅ Esecuzione notturna senza PC acceso (GitHub Actions)
-- ✅ Gestione risk/reward personalizzato
-- ✅ Log completo di ogni ciclo di trading
+- ✅ **Analisi automatica del FTSE MIB (FIB1!)**
+- ✅ **Notifiche via Email (Gmail SMTP + App Password)**
+- ✅ **Validazione secrets con fallback intelligente**
+- ✅ **Logging comprensivo con timezone Europe/Rome**
+- ✅ **Esecuzione schedulata: feriali ore 19:00 CET**
+- ✅ **Esecuzione manuale via workflow_dispatch**
+- ✅ **Robustezza rete: timeout e retry**
+- ✅ **Headless: nessun input interattivo richiesto**
 
 ---
 
 ## 🚀 Setup Iniziale (IMPORTANTE!)
 
-### 1. Creare un Bot Telegram
+### 1. Generare Gmail App Password
 
-1. Apri Telegram e cerca **@BotFather**
-2. Invia il comando `/start`
-3. Invia `/newbot`
-4. Dagli un nome (es: "FAI-QUANT-SUPERIOR Bot")
-5. Scegli un username (es: "fai_quant_superior_bot")
-6. Copia il **TOKEN BOT** (es: `123456:ABC...`)
+1. Vai a https://myaccount.google.com/apppasswords
+2. Seleziona **Mail** e **Windows (o altro device)**
+3. Google genererà una password di 16 caratteri (esempio: `abcd efgh ijkl mnop`)
+4. **Copia questa password** (la userai come SMTP_PASS)
 
-### 2. Ottenere il Chat ID
+> **Nota**: Non usare la tua password Gmail normale! Le App Password funzionano solo se hai l'autenticazione a 2 fattori abilitata.
 
-1. Crea un gruppo privato e aggiungi il bot
-2. Invia un messaggio nel gruppo
-3. Apri nel browser: `https://api.telegram.org/botTUO_TOKEN/getUpdates`
-4. Sostituisci `TUO_TOKEN` con il token del bot
-5. Cerca il `chat` (es: `-123456789`)
-6. Copia il **CHAT ID**
+### 2. Configurare GitHub Secrets
 
-### 3. Configurare i Secrets su GitHub
+Vai a: **Settings → Secrets and variables → Actions**
 
-1. Vai su: https://github.com/SLartax/FAI-QUANT-SUPERIOR/settings/secrets/actions
-2. Clicca **"New repository secret"**
-3. Crea due secrets:
+Aggiungi i seguenti secrets:
 
-   **Secret 1**:
-   - Name: `TELEGRAM_BOT_TOKEN`
-   - Value: (il token copiato da BotFather)
-   
-   **Secret 2**:
-   - Name: `TELEGRAM_CHAT_ID`
-   - Value: (il chat ID ottenuto dal link getUpdates)
+| Secret | Valore | Obbligatorio | Esempio |
+|--------|--------|--------------|----------|
+| `SMTP_HOST` | smtp.gmail.com | ✅ Si | `smtp.gmail.com` |
+| `SMTP_PORT` | 587 (default TLS) | ❌ No | `587` |
+| `SMTP_USER` | Tuo indirizzo Gmail | ✅ Si | `tuoemail@gmail.com` |
+| `SMTP_PASS` | Gmail App Password | ✅ Si | `abcd efgh ijkl mnop` |
+| `EMAIL_TO` | Destinatario email | ❌ No | `pioggiamarrone@gmail.com` |
+| `EMAIL_FROM_NAME` | Nome del mittente | ❌ No | `FAI-QUANT-SUPERIOR` |
 
-4. Clicca **"Add secret"**
+**Secrets Obbligatori**: `SMTP_HOST`, `SMTP_USER`, `SMTP_PASS`  
+Senza questi, il workflow fallirà con messaggio d'errore esplicito.
 
 ---
 
 ## 📋 File Principali
 
 ```
-├── trading_system.py           # Motore principale del trading
-├── requirements.txt            # Dipendenze Python
+.
+├── trading_system.py          # Sistema di trading principale (SMTP email integration)
+├── requirements.txt           # Dipendenze Python (pandas, requests, pytz, yfinance)
 ├── .github/workflows/
-│   └── trading-overnight.yml   # Automazione GitHub Actions
-└── README.md                   # Questo file
+│   └── trading-overnight.yml  # GitHub Actions workflow
+├── README.md                  # Questo file
+└── SETUP.md                   # Guida dettagliata setup
 ```
 
 ---
 
 ## ⏰ Schedule di Esecuzione
 
-Il workflow si esegue **automaticamente**:
-- **Giorni**: Lunedì - Venerdì
-- **Ora**: 19:00 CET (18:00 UTC)
-- **Azione**: Scarica dati, calcola segnali, invia a Telegram
+**Automatico**: Ogni giorno feriale (lunedì-venerdì) alle **19:00 CET (18:00 UTC)**
 
-Puoi anche eseguire manualmente:
-1. Vai su: https://github.com/SLartax/FAI-QUANT-SUPERIOR/actions
-2. Seleziona **"FAI-QUANT-SUPERIOR Trading System"**
-3. Clicca **"Run workflow"**
+Cron expression: `0 18 * * 1-5`
+
+```
+19:00 CET = 18:00 UTC
+```
+
+Verifica esecuzioni su GitHub: [Actions](https://github.com/SLartax/FAI-QUANT-SUPERIOR/actions)
 
 ---
 
 ## 🔍 Verificare che Funziona
 
-### Test Manual (Consigliato)
+### Test Manuale (Consigliato)
 
-1. Vai a: https://github.com/SLartax/FAI-QUANT-SUPERIOR/actions
-2. Seleziona il workflow **"FAI-QUANT-SUPERIOR Trading System"**
-3. Clicca il bottone verde **"Run workflow"**
-4. Aspetta 1-2 minuti
-5. Controlla il gruppo Telegram per il messaggio di segnale
+1. Vai a: **Actions → FAI-QUANT-SUPERIOR Trading System (Email Only)**
+2. Clicca **"Run workflow"** → **"Run workflow"**
+3. Aspetta qualche secondo
+4. Controlla i log e verifica l'email ricevuta
 
 ### Controllare i Log
 
-1. Vai a **Actions** → **FAI-QUANT-SUPERIOR Trading System**
-2. Clicca sull'ultima esecuzione
-3. Espandi il job **"trading"**
-4. Leggi i log per diagnosticare problemi
+Nel run del workflow, accedi ai log e verifica:
+
+- ✅ `Secrets validated. Email will be sent to: ...`
+- ✅ `Fetching FTSE MIB market data...`
+- ✅ `BUY/SELL/FLAT signal generated`
+- ✅ `Email sent successfully to ...`
+
+Se vedi **`FATAL: Missing required secrets`**, significa che uno o più secrets non sono stati impostati correttamente.
 
 ---
 
-## 📊 Segnali di Esempio
+## 📧 Contenuto Email
 
-Quando il sistema rileva un setup, invia a Telegram:
+Ogni email conterrà:
 
-```
-🎯 FAI-QUANT-SUPERIOR
+- **Soggetto**: `FAI-QUANT-SUPERIOR — BUY/SELL/FLAT — 2025-12-22 19:00 Europe/Rome`
+- **Corpo**:
+  - Strumento: FTSE MIB (FIB1!)
+  - Data/Ora Europe/Rome
+  - **Segnale**: BUY | SELL | FLAT
+  - Prezzo di riferimento
+  - Regola del segnale (motivazione)
+  - Link al GitHub Actions run
 
-Ora: 2025-12-22T19:00:00+01:00
-Raccomandazione: BUY
-Livello di rischio: medium
-
-Strumenti:
-FIB1!
-• Azione: BUY
-• Entrata: Market
-• Stop Loss: -100
-• Take Profit: +150
-
-⚠️ Questo è un segnale algoritmico. Non è consulenza finanziaria.
-```
+**Nota**: Le email vengono inviate SOLO per segnali BUY/SELL. I segnali FLAT non generano email (configurable in `trading_system.py` line ~280).
 
 ---
 
@@ -129,84 +124,119 @@ FIB1!
 
 ### Modificare l'Orario di Esecuzione
 
-Edita `.github/workflows/trading-overnight.yml`:
+Modifica `.github/workflows/trading-overnight.yml` linea 8:
 
 ```yaml
-on:
-  schedule:
-    # Formato cron: minute hour day-of-month month day-of-week
-    - cron: '0 18 * * 1-5'  # Cambia questo
+- cron: '0 19 * * 1-5'  # 19:00 UTC (cambiar il primo valore)
 ```
 
+**Convertitore CET ↔ UTC**: CET = UTC + 1 (o UTC + 2 in ora legale)
+
 Esempi:
-- `'0 19 * * *'` = Ogni giorno alle 19:00 CET
-- `'0 16 * * 1-5'` = Lunedì-Venerdì alle 16:00
-- `'30 19 * * 5'` = Venerdì alle 19:30
+- `19:00 CET` = `18:00 UTC` → cron: `0 18 * * 1-5`
+- `21:00 CET` = `20:00 UTC` → cron: `0 20 * * 1-5`
 
 ### Aggiungere Nuovi Strumenti
 
-Edita `trading_system.py` nella funzione `calculate_signals()`:
+Modifica `trading_system.py` metodo `calculate_signals()`:
 
 ```python
-signals['instruments'].append({
-    'symbol': 'EUR/USD',  # Aggiungi nuovo
-    'action': 'SELL',
-    'entry': 'Limit 1.0850',
-    'stop_loss': '+50 pips',
-    'take_profit': '-150 pips'
-})
+def calculate_signals(self, market_data):
+    # ... codice esistente ...
+    
+    # Aggiungi nuova logica per altri strumenti
+    if self.some_condition():
+        signals['signal'] = 'BUY'
+        signals['reason'] = 'Tua regola qui'
+```
+
+### Modificare Logica Email
+
+In `trading_system.py` linea ~280, modifica la condizione:
+
+```python
+# ATTUALE: Invia solo BUY/SELL
+if signal['signal'] in ['BUY', 'SELL']:
+    self.send_email(signal)
+
+# ALTERNATIVA: Invia sempre (anche FLAT)
+if signal:  # Rimuovi la condizione
+    self.send_email(signal)
 ```
 
 ---
 
 ## ⚠️ Troubleshooting
 
-### "No secrets found"
+### "FATAL: Missing required secrets"
 
-**Problema**: Il workflow fallisce dicendo che mancano i secrets
-
+**Causa**: Uno o più secrets non sono configurati.  
 **Soluzione**:
-1. Verifica di aver aggiunto i secrets in Settings → Secrets and variables
-2. Controlla che i nomi siano ESATTAMENTE:
-   - `TELEGRAM_BOT_TOKEN`
-   - `TELEGRAM_CHAT_ID`
-3. I nomi sono case-sensitive!
+1. Vai a Settings → Secrets
+2. Verifica che `SMTP_HOST`, `SMTP_USER`, `SMTP_PASS` siano presenti
+3. Non lasciare campi vuoti
 
-### "Failed to send message to Telegram"
+### "SMTP Authentication failed"
 
-**Problema**: Il messaggio non arriva su Telegram
-
+**Causa**: Username o password SMTP errati.  
 **Soluzione**:
-1. Verifica che il bot sia aggiunto al gruppo/chat
-2. Controlla che il CHAT ID sia corretto (negativo per gruppi)
-3. Verifica che il BOT TOKEN sia corretto
+1. Verifica che `SMTP_USER` sia il tuo indirizzo Gmail completo (es: `nome@gmail.com`)
+2. Verifica che `SMTP_PASS` sia l'**App Password**, non la password Gmail normale
+3. Assicurati di avere l'autenticazione 2FA abilitata su Gmail
+
+### "Timeout fetching market data (10s)"
+
+**Causa**: Yahoo Finance non risponde entro 10 secondi.  
+**Soluzione**:
+- Il sistema ritornerà FLAT signal
+- Verifica la connessione internet
+- Riprova manualmente (Actions → Run workflow)
 
 ### "Workflow not running on schedule"
 
-**Problema**: Il workflow non parte all'orario stabilito
-
+**Causa**: GitHub Actions potrebbe non eseguire il workflow se il repository è inattivo.  
 **Soluzione**:
-1. GitHub Actions ha un delay di pochi minuti
-2. L'orario è in **UTC**, non in ora locale
-3. Prova il test manuale per verificare che il codice funziona
+1. Fai un push di una modifica al repository
+2. Il workflow dovrebbe riprendere a girare
+3. Nel frattempo, puoi testare manualmente con workflow_dispatch
+
+---
+
+## 📊 Segnali di Esempio
+
+### Email ricevuta con BUY
+
+```
+Soggetto: FAI-QUANT-SUPERIOR — BUY — 2025-12-22 19:45 Europe/Rome
+
+Strumento: FTSE MIB (FIB1!)
+Data/Ora (Europe/Rome): 2025-12-22 19:45:30
+Segnale: BUY
+Prezzo di riferimento: 34567.89
+Ultima candela disponibile: 2025-12-22 19:45
+Regola del segnale: Market hours 19:00-21:00 CET - BUY signal triggered
+Run GitHub Actions: [Link]
+Risk Level: medium
+```
 
 ---
 
 ## 📚 Documentazione
 
 - [GitHub Actions Docs](https://docs.github.com/en/actions)
-- [Telegram Bot API](https://core.telegram.org/bots/api)
-- [Python Async Programming](https://docs.python.org/3/library/asyncio.html)
+- [Gmail App Passwords](https://support.google.com/accounts/answer/185833)
+- [Python SMTP Library](https://docs.python.org/3/library/smtplib.html)
+- [Pytz Timezone Documentation](https://pypi.org/project/pytz/)
+- [YFinance Documentation](https://github.com/ranaroussi/yfinance)
 
 ---
 
 ## 📝 Disclaimer
 
-Questo è un sistema algoritmico di trading sperimentale. Non è consulenza finanziaria. Il trading comporta rischi significativi. Non investire denaro che non puoi permetterti di perdere.
+Questo sistema di trading **non fornisce garanzie di profitto**. Usa il sistema a **tuo rischio**. Non fornisce consigli finanziari.
 
 ---
 
 ## 👨‍💼 Autore
 
-**Studio Legale Artax** - Sistema di Trading Quantitativo  
-Torino, Italia
+[SLartax](https://github.com/SLartax) - Studio Legale Artax
