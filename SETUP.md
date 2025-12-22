@@ -1,235 +1,280 @@
 # GUIDA DI SETUP - FAI-QUANT-SUPERIOR
 
-## Passo 1: Creare un Bot Telegram (5 minuti)
+**Tempo stimato: 15 minuti**
 
-### 1.1 Aprire Telegram
-
-Se non hai Telegram, scaricalo da:
-- **Android/iOS**: App Store o Google Play Store
-- **Desktop**: https://desktop.telegram.org
-- **Web**: https://web.telegram.org
-
-### 1.2 Contattare BotFather
-
-1. Nel campo ricerca di Telegram, digita: `@BotFather`
-2. Clicca sul primo risultato (verificato con una spunta blu)
-3. Clicca il tasto **"START"** (se non compare, invia `/start`)
-4. BotFather risponderà con un menu di opzioni
-
-### 1.3 Creare un nuovo bot
-
-1. Invia il comando: `/newbot`
-2. BotFather chiederà un nome per il bot
-   - Esempio: `FAI-QUANT-SUPERIOR Bot`
-3. Poi chiederà un username (deve finire con `bot`)
-   - Esempio: `fai_quant_superior_bot`
-4. BotFather ti manderà il **TOKEN** (una stringa tipo: `123456:ABC...xyz`)
-
-⚠️ **IMPORTANTE**: Salva questo token da qualche parte! Lo userai nel passo 3
+Questa guida spiega come configurare completamente il sistema di trading con email notifications.
 
 ---
 
-## Passo 2: Ottenere il Chat ID (3 minuti)
+## Passo 1: Abilitare Autenticazione 2FA su Gmail (5 minuti)
 
-### 2.1 Creare un gruppo privato
+Le **Gmail App Passwords** richiedono l'autenticazione a due fattori.
 
-1. Su Telegram, clicca l'icona **"Matita"** (in alto a sinistra)
-2. Scegli **"Nuovo gruppo"**
-3. Seleziona il bot che hai creato (cerca il nome del bot)
-4. Dai un nome al gruppo (es: "FAI-QUANT-SUPERIOR Alerts")
-5. Clicca **"CREA"**
+### 1.1 Vai al tuo Account Google
 
-### 2.2 Inviare un messaggio
+1. Accedi a: https://myaccount.google.com
+2. Clicca su **"Sicurezza"** (a sinistra)
+3. Cerca **"Verifica in due passaggi"**
+4. Se non è ancora abilitata:
+   - Clicca **"Attiva"**
+   - Segui le istruzioni (riceverai un codice SMS)
+   - Completa la verifica
 
-1. Nel gruppo appena creato, invia un messaggio qualsiasi (es: "test")
+### 1.2 Verifica il Completamento
 
-### 2.3 Ottenere il Chat ID
-
-1. Apri una nuova scheda del browser
-2. Incolla questo URL:
-   ```
-   https://api.telegram.org/botTUO_TOKEN/getUpdates
-   ```
-   Sostituisci `TUO_TOKEN` con il token che hai copiato nel Passo 1
-   
-   Esempio reale:
-   ```
-   https://api.telegram.org/bot123456:ABCxyz/getUpdates
-   ```
-
-3. Premi **INVIO**
-4. Vedrai un testo JSON lungo
-5. Cerca la parola `"chat"` e guarda il numero dopo di essa
-6. Se è un gruppo, il numero sarà **negativo** (es: `-123456789`)
-
-⚠️ **IMPORTANTE**: Salva questo Chat ID! Lo userai nel Passo 3
-
-Esempio di risposta:
-```json
-{
-  "ok": true,
-  "result": [
-    {
-      "update_id": 123456789,
-      "message": {
-        "message_id": 1,
-        "date": 1671717600,
-        "chat": {
-          "id": -123456789,
-          "title": "FAI-QUANT-SUPERIOR Alerts"
-        }
-      }
-    }
-  ]
-}
+Dovresti vedere:
+```
+Verifica in due passaggi
+✓ Attiva
 ```
 
-In questo esempio, il Chat ID è: `-123456789`
+---
+
+## Passo 2: Generare Gmail App Password (3 minuti)
+
+### 2.1 Accedi al Pannello App Password
+
+1. Vai a: https://myaccount.google.com/apppasswords
+2. Se ti chiede di accedere di nuovo, fallo
+3. Seleziona:
+   - **App**: Mail (o Email)
+   - **Dispositivo**: Windows (non importa quale)
+4. Clicca **"Genera"**
+
+### 2.2 Copia la Password
+
+Google genererà una password di 16 caratteri simile a:
+```
+abcd efgh ijkl mnop
+```
+
+**COPIA QUESTA PASSWORD** - la userai come `SMTP_PASS` in GitHub Secrets.
+
+> ⚠️ **IMPORTANTE**: Questa password è diversa dalla tua password Gmail normale. Non condividerla!
 
 ---
 
-## Passo 3: Configurare i Secrets su GitHub (3 minuti)
+## Passo 3: Configurare GitHub Secrets (5 minuti)
 
-### 3.1 Accedere a GitHub
+### 3.1 Vai a Settings del Repository
 
-1. Vai su: https://github.com
-2. Se non sei loggato, fai login con il tuo account
+1. Vai al repository: https://github.com/SLartax/FAI-QUANT-SUPERIOR
+2. Clicca **"Settings"** (menu top)
+3. A sinistra, clicca **"Secrets and variables"** → **"Actions"**
 
-### 3.2 Aprire le impostazioni dei secrets
+### 3.2 Crea i Secrets
 
-1. Vai a questo URL:
-   ```
-   https://github.com/SLartax/FAI-QUANT-SUPERIOR/settings/secrets/actions
-   ```
-   Oppure:
-   - Clicca su **"Settings"** nella pagina del repository
-   - Nel menu a sinistra, vai a **"Secrets and variables"** → **"Actions"**
+Clicca **"New repository secret"** e aggiungi questi secrets uno per uno:
 
-### 3.3 Aggiungere il primo secret (BOT TOKEN)
+#### Secret 1: SMTP_HOST
+- **Name**: `SMTP_HOST`
+- **Value**: `smtp.gmail.com`
+- Clicca **"Add secret"**
 
-1. Clicca il pulsante verde **"New repository secret"**
-2. Nel campo **"Name"**, scrivi esattamente:
-   ```
-   TELEGRAM_BOT_TOKEN
-   ```
-   (maiuscole, senza spazi)
+#### Secret 2: SMTP_PORT
+- **Name**: `SMTP_PORT`
+- **Value**: `587`
+- Clicca **"Add secret"**
 
-3. Nel campo **"Value"**, incolla il TOKEN che hai copiato nel Passo 1
-   Esempio:
-   ```
-   123456:ABCxyzdef...
-   ```
+#### Secret 3: SMTP_USER
+- **Name**: `SMTP_USER`
+- **Value**: Il tuo indirizzo Gmail (es: `tuoemail@gmail.com`)
+- Clicca **"Add secret"**
 
-4. Clicca **"Add secret"**
+#### Secret 4: SMTP_PASS (OBBLIGATORIO!)
+- **Name**: `SMTP_PASS`
+- **Value**: La App Password che hai copiato (es: `abcd efgh ijkl mnop`)
+- Clicca **"Add secret"**
 
-### 3.4 Aggiungere il secondo secret (CHAT ID)
+#### Secret 5: EMAIL_TO (opzionale)
+- **Name**: `EMAIL_TO`
+- **Value**: `pioggiamarrone@gmail.com` (o altra email destinataria)
+- Clicca **"Add secret"**
 
-1. Clicca di nuovo il pulsante verde **"New repository secret"**
-2. Nel campo **"Name"**, scrivi esattamente:
-   ```
-   TELEGRAM_CHAT_ID
-   ```
-   (maiuscole, senza spazi)
+#### Secret 6: EMAIL_FROM_NAME (opzionale)
+- **Name**: `EMAIL_FROM_NAME`
+- **Value**: `FAI-QUANT-SUPERIOR`
+- Clicca **"Add secret"**
 
-3. Nel campo **"Value"**, incolla il CHAT ID che hai copiato nel Passo 2
-   Esempio:
-   ```
-   -123456789
-   ```
-   Includi il **meno** se è un gruppo!
+### 3.3 Verifica i Secrets
 
-4. Clicca **"Add secret"**
+Dovrebbe apparire una lista simile a:
+```
+✓ SMTP_HOST
+✓ SMTP_PORT
+✓ SMTP_USER
+✓ SMTP_PASS
+✓ EMAIL_TO
+✓ EMAIL_FROM_NAME
+```
 
-✅ **Fatto!** I secrets sono ora configurati su GitHub.
+**Secrets obbligatori**: `SMTP_HOST`, `SMTP_USER`, `SMTP_PASS`
+
+Senza questi, il workflow fallirà immediatamente.
 
 ---
 
 ## Passo 4: Testare il Sistema (2 minuti)
 
-### 4.1 Eseguire il workflow manualmente
+### 4.1 Vai alla Pagina Actions
 
-1. Vai a: https://github.com/SLartax/FAI-QUANT-SUPERIOR/actions
-2. Nel menu a sinistra, clicca il workflow **"FAI-QUANT-SUPERIOR Trading System"**
-3. Clicca il pulsante **"Run workflow"** (bianco)
-4. Seleziona il branch **"main"** e clicca **"Run workflow"**
+1. Nel repository, clicca **"Actions"** (menu top)
+2. A sinistra, seleziona **"FAI-QUANT-SUPERIOR Trading System (Email Only)"**
 
-### 4.2 Monitorare l'esecuzione
+### 4.2 Esegui il Workflow Manualmente
 
-1. Aspetta che il workflow finisca (1-2 minuti)
-2. Vedrai un indicatore verde ✅ se è riuscito, rosso ❌ se ha errori
-3. Se vedi errori, clicca sull'esecuzione per leggere i log
+1. Clicca il pulsante **"Run workflow"** (a destra)
+2. Seleziona il branch: **"main"**
+3. Clicca **"Run workflow"** (verde)
 
-### 4.3 Verificare il messaggio Telegram
+### 4.3 Attendi l'Esecuzione
 
-1. Apri il gruppo Telegram che hai creato nel Passo 2
-2. Se tutto funziona, vedrai un messaggio come:
+Il workflow deve:
+1. Partire (cambierà da `queued` a `in progress`)
+2. Eseguire in ~30-60 secondi
+3. Terminare con status **verde** (✅ success) o **rosso** (❌ failure)
+
+### 4.4 Controlla i Log
+
+Clicca sul run per vedere i log:
 
 ```
-FAI-QUANT-SUPERIOR
-Ora: 2025-12-22T20:00:00+01:00
-Raccomandazione: BUY
-...
+✓ Checkout code
+✓ Set up Python
+✓ Check required secrets
+✓ Install dependencies
+✓ Verify Python environment
+✓ Run trading system
+✓ Log execution summary
 ```
 
-✅ **Successo!** Il sistema è operativo.
+Nei log, cerca questi messaggi positivi:
+
+```
+Secrets validated. Email will be sent to: pioggiamarrone@gmail.com
+Fetching FTSE MIB market data...
+Market data fetched successfully
+BUY signal generated (o FLAT signal)
+Connecting to SMTP: smtp.gmail.com:587
+TLS connection established
+Authenticated as tuoemail@gmail.com
+Email sent successfully to pioggiamarrone@gmail.com
+```
+
+### 4.5 Verifica l'Email
+
+Controlla la inbox di **pioggiamarrone@gmail.com** (o l'email che hai configurato).
+
+Dovrebbe arrivare un'email con:
+- **Mittente**: `FAI-QUANT-SUPERIOR <tuoemail@gmail.com>`
+- **Soggetto**: `FAI-QUANT-SUPERIOR — BUY/SELL/FLAT — 2025-12-22 19:00 Europe/Rome`
+- **Corpo**: Dettagli del segnale, prezzo, link a GitHub Actions
 
 ---
 
-## Passo 5: Automatizzazione (Non serve far nulla)
+## Troubleshooting: Errori Comuni
 
-Da ora in poi, il sistema si eseguirà **automaticamente** ogni giorno feriale alle 19:00 CET senza che tu faccia nulla.
+### Errore: "FATAL: Missing required secrets"
 
-Non è necessario avere il PC acceso.
-Non è necessario avere Telegram aperto.
+**Cosa significa**: Uno o più secrets non sono configurati.
 
-I messaggi arriveranno al gruppo che hai creato nel Passo 2.
+**Soluzione**:
+1. Vai a Settings → Secrets
+2. Verifica che questi secrets esistano:
+   - `SMTP_HOST` = `smtp.gmail.com`
+   - `SMTP_USER` = il tuo email
+   - `SMTP_PASS` = la App Password
+3. Se manca uno, crealo
+4. Riprova manualmente
+
+### Errore: "SMTP Authentication failed"
+
+**Cosa significa**: Le credenziali SMTP sono sbagliate.
+
+**Soluzione**:
+1. Verifica che `SMTP_USER` sia il tuo Gmail completo (es: `nome@gmail.com`)
+2. Verifica che `SMTP_PASS` sia l'**App Password**, non la password Gmail normale
+3. Se hai sbagliato, elimina il secret e ricrealo
+4. Controlla che l'autenticazione 2FA sia attiva su Gmail
+
+### Errore: "Timeout fetching market data"
+
+**Cosa significa**: Yahoo Finance non ha risposto in 10 secondi.
+
+**Soluzione**:
+- Il sistema ritornerà FLAT signal automaticamente
+- Questo è temporaneo (problema di connessione)
+- Riprova manualmente tra qualche minuto
+
+### Email non ricevuta
+
+**Cosa fare**:
+1. Controlla che il workflow sia passato (status verde)
+2. Leggi i log per verificare "Email sent successfully"
+3. Controlla la spam folder
+4. Verifica che `EMAIL_TO` sia l'indirizzo corretto
 
 ---
 
-## 🚠 Risoluzione Problemi
+## Configurazione Avanzata
 
-### Problema: "Unauthorized" o errore 401 nel workflow
+### Cambiar e l'Orario di Esecuzione
 
-**Causa**: Il TOKEN BOT è scorretto o il valore del secret non è esatto.
+Modifica `.github/workflows/trading-overnight.yml` linea ~7:
 
-**Soluzione**:
-1. Copia di nuovo il TOKEN direttamente da BotFather
-2. Vai a GitHub → Settings → Secrets
-3. Clicca il secret `TELEGRAM_BOT_TOKEN`
-4. Clicca **"Update secret"**
-5. Cancella il valore e incolla il nuovo TOKEN
-6. Salva e riprova il test
+```yaml
+schedule:
+  - cron: '0 18 * * 1-5'  # Modifica questo valore
+```
 
-### Problema: Bot non invia il messaggio
+Esempi di cron:
+- `0 18 * * 1-5` = 18:00 UTC (19:00 CET)
+- `0 20 * * 1-5` = 20:00 UTC (21:00 CET)
+- `30 17 * * 1-5` = 17:30 UTC (18:30 CET)
 
-**Causa**: Il CHAT ID è scorretto o il bot non è nel gruppo.
+### Modificare il Destinatario Email
 
-**Soluzione**:
-1. Verifica che il bot sia stato aggiunto al gruppo (deve comparire tra i membri)
-2. Ripeti il Passo 2 per ottenere il Chat ID corretto
-3. Controlla che il numero sia **negativo** se è un gruppo
-4. Aggiorna il secret `TELEGRAM_CHAT_ID` su GitHub
-5. Riprova il test
+Modifica il secret `EMAIL_TO` in GitHub Secrets.
 
-### Problema: Workflow non esiste / non compare in Actions
+### Inviare Email anche per Segnali FLAT
 
-**Causa**: Il file `.github/workflows/trading-overnight.yml` non è caricato correttamente.
+Modifica `trading_system.py` linea ~280:
 
-**Soluzione**:
-1. Vai a: https://github.com/SLartax/FAI-QUANT-SUPERIOR/tree/main/.github/workflows
-2. Verifica che esista il file `trading-overnight.yml`
-3. Se manca, crealo manualmente seguendo il README
+```python
+# PRIMA (invia solo BUY/SELL):
+if signal['signal'] in ['BUY', 'SELL']:
+    self.send_email(signal)
+
+# DOPO (invia sempre):
+if signal:
+    self.send_email(signal)
+```
+
+Fai commit e il prossimo run userà la nuova logica.
 
 ---
 
-## ✅ Checklist Finale
+## Verifica Finale Checklist
 
-- [ ] Ho creato un bot con BotFather
-- [ ] Ho copiato il TOKEN BOT
-- [ ] Ho aggiunto il bot a un gruppo privato
-- [ ] Ho ottenuto il CHAT ID
-- [ ] Ho aggiunto i due secrets su GitHub
-- [ ] Ho testato il workflow manualmente
-- [ ] Ho ricevuto un messaggio su Telegram
+- [ ] Gmail 2FA abilitato
+- [ ] Gmail App Password generato
+- [ ] `SMTP_HOST` secret creato = `smtp.gmail.com`
+- [ ] `SMTP_USER` secret creato = il tuo Gmail
+- [ ] `SMTP_PASS` secret creato = App Password
+- [ ] Test manuale eseguito (Run workflow)
+- [ ] Log mostra "Email sent successfully"
+- [ ] Email ricevuta in inbox
+- [ ] Workflow aggiunto al calendario (ogni feriale 19:00 CET)
 
-🎉 **Se tutti i checkbox sono spuntati, il sistema è OPERATIVO!**
+---
+
+## Link Utili
+
+- [Gmail App Passwords](https://support.google.com/accounts/answer/185833)
+- [GitHub Secrets Documentation](https://docs.github.com/en/actions/security-guides/encrypted-secrets)
+- [GitHub Actions Workflows](https://docs.github.com/en/actions/learn-github-actions)
+- [Python SMTP Documentation](https://docs.python.org/3/library/smtplib.html)
+
+---
+
+**Supporto**: Se hai problemi, controlla i log e verifica il Troubleshooting.
