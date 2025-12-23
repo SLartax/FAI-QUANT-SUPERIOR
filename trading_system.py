@@ -185,19 +185,22 @@ def filters(r):
 def get_next_overnight_signal(df):
     today = dt.date.today()
 
-    df_live = df.dropna(
+        df_live = df.dropna(
         subset=["gap_open", "spy_ret", "vix_ret", "vol_z", "dow"]
     ).copy()
+
+    if df_live.empty:
+        raise RuntimeError("ERRORE: Nessun dato valido disponibile")
 
     last_row = df_live.iloc[-1]
     last_date = last_row.name.date()
 
     if last_date >= today:
-        raise RuntimeError("ERRORE: tentativo di usare dati non chiusi")
+        raise RuntimeError("ERRORE: tentativo di usare dati non chiusi (data più recente: {})".format(last_date))
 
     signal = match_top3(last_row) and filters(last_row)
-
     return last_date, signal
+
 
 
 # ============================================================
