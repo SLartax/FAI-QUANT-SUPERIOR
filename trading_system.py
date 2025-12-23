@@ -194,7 +194,7 @@ def get_next_overnight_signal(df):
     last_row = df_live.iloc[-1]
     last_date = last_row.name.date()
 
-    if last_date >= today:
+    if last_date > today:
         raise RuntimeError(f"ERRORE: data piu recente ({last_date}) non è chiusa")
 
     signal = match_top3(last_row) and filters(last_row)
