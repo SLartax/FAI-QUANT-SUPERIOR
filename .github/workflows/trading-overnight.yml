@@ -34,7 +34,7 @@ jobs:
           SMTP_PORT: ${{ secrets.SMTP_PORT || '587' }}
           SMTP_USER: ${{ secrets.SMTP_USER }}
           SMTP_PASS: ${{ secrets.SMTP_PASS }}
-          EMAIL_TO: ${{ secrets.EMAIL_TO }}
+         EMAIL_TO: ${{ secrets.EMAIL_TO || 'studiolegaleartax@gmail.com' }}
           EMAIL_FROM_NAME: FAI-QUANT-SUPERIOR
           TZ: Europe/Rome
         run: |
