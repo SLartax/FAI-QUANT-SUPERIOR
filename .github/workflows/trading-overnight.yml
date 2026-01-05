@@ -1,30 +1,24 @@
-name: FAI-QUANT-SUPERIOR Overnight Signal (Email)
+name: FAI-QUANT-SUPERIOR Trading System (Email)
 
 on:
-  schedule:
-    # GitHub cron è sempre in UTC.
-    # 17:40 Europe/Rome:
-    # - in CEST (UTC+2) -> 15:40 UTC
-    # - in CET  (UTC+1) -> 16:40 UTC
-    - cron: "40 15 * * 1-5"
-    - cron: "40 16 * * 1-5"
   workflow_dispatch:
-    inputs:
-      force_run:
-        description: "1 = forza esecuzione anche fuori finestra oraria"
-        required: false
-        default: "0"
+  schedule:
+    # 19:00 Europe/Rome circa = 18:00 UTC (in inverno). In estate può slittare di 1h.
+    - cron: "0 18 * * 1-5"
+  push:
+    branches: ["main"]
+
+permissions:
+  contents: read
 
 jobs:
-  overnight:
+  run:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up Python
+      - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
@@ -35,20 +29,26 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Run Overnight Trading System
+      - name: Validate secrets (fail fast)
         env:
           SMTP_HOST: ${{ secrets.SMTP_HOST }}
-          SMTP_PORT: ${{ secrets.SMTP_PORT || '587' }}
           SMTP_USER: ${{ secrets.SMTP_USER }}
           SMTP_PASS: ${{ secrets.SMTP_PASS }}
-          EMAIL_TO: ${{ secrets.EMAIL_TO || 'studiolegaleartax@gmail.com' }}
-          EMAIL_FROM_NAME: FAI-QUANT-SUPERIOR
-          TZ: Europe/Rome
-          FORCE_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.force_run || '0' }}
-          PYTHONUNBUFFERED: "1"
+          EMAIL_TO: ${{ secrets.EMAIL_TO }}
         run: |
-          echo "=== FAI QUANT SUPERIOR OVERNIGHT ==="
-          echo "UTC now:  $(date -u)"
-          echo "Rome now: $(TZ=Europe/Rome date)"
-          python trading_system.py
+          test -n "$SMTP_HOST" || (echo "::error::Missing SMTP_HOST secret" && exit 1)
+          test -n "$SMTP_USER" || (echo "::error::Missing SMTP_USER secret" && exit 1)
+          test -n "$SMTP_PASS" || (echo "::error::Missing SMTP_PASS secret" && exit 1)
+          echo "::notice::Secrets OK. EMAIL_TO is set? -> $([ -n "$EMAIL_TO" ] && echo yes || echo no)"
 
+      - name: Run trading system (sends email)
+        env:
+          TZ: Europe/Rome
+          SMTP_HOST: ${{ secrets.SMTP_HOST }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_PASS: ${{ secrets.SMTP_PASS }}
+          EMAIL_TO: ${{ secrets.EMAIL_TO }}
+          EMAIL_FROM_NAME: ${{ secrets.EMAIL_FROM_NAME }}
+        run: |
+          python trading_system.py
