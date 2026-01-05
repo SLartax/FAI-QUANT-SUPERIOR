@@ -26,12 +26,11 @@ START_DATE = "2010-01-01"
 ALLOWED_DAYS = [0, 1, 2, 3]  # Lun–Gio (se vuoi anche venerdì -> aggiungi 4)
 
 TZ_ROME = ZoneInfo("Europe/Rome")
-SNAPSHOT_TIME_ROME = dt.time(17, 30)     # prezzo target: 17:30 Europe/Rome
-RUN_WINDOW_START = dt.time(17, 33)       # esegui (e manda mail) solo dopo che Yahoo ha pubblicato i minuti
-RUN_WINDOW_END = dt.time(17, 55)         # finestra di tolleranza
+SNAPSHOT_TIME_ROME = dt.time(17, 30)
 
-INTRADAY_INTERVAL = "1m"
-INTRADAY_PERIOD = "7d"
+# Finestra di esecuzione per GitHub Actions
+RUN_WINDOW_START = dt.time(17, 33)       # finestra d'avvio in minuti
+RUN_WINDOW_END = dt.time(17, 55)         # finestra d'esecuzione in minuti
 
 
 # ============================================================
@@ -43,17 +42,21 @@ class EmailClient:
         self.smtp_port = os.getenv("SMTP_PORT", "587")
         self.smtp_user = os.getenv("SMTP_USER")
         self.smtp_pass = os.getenv("SMTP_PASS")
-        self.email_to = os.getenv("EMAIL_TO")
+
+        # Destinatario: se EMAIL_TO non è impostata, usa il default richiesto
+        email_to_raw = (os.getenv("EMAIL_TO") or "").strip()
+        self.email_to = email_to_raw if email_to_raw else "studiolegaleartax@gmail.com"
+
         self.from_name = os.getenv("EMAIL_FROM_NAME", "FAI-QUANT-SUPERIOR")
         self._validate_secrets()
 
     def _validate_secrets(self):
+        # EMAIL_TO non è obbligatoria: c'è un default
         required = {
             "SMTP_HOST": self.smtp_host,
             "SMTP_PORT": self.smtp_port,
             "SMTP_USER": self.smtp_user,
             "SMTP_PASS": self.smtp_pass,
-            "EMAIL_TO": self.email_to,
         }
         missing = [k for k, v in required.items() if not v]
         if missing:
@@ -69,10 +72,23 @@ class EmailClient:
         msg["Subject"] = subject
         msg.attach(MIMEText(body, "plain"))
 
-        with smtplib.SMTP(self.smtp_host, int(self.smtp_port)) as server:
-            server.starttls()
-            server.login(self.smtp_user, self.smtp_pass)
-            server.send_message(msg)
+        host = self.smtp_host
+        port = int(self.smtp_port)
+
+        print(f"[email] Invio a {self.email_to} via {host}:{port} (user={self.smtp_user})")
+
+        # Supporto 587 (STARTTLS) e 465 (SSL)
+        if port == 465:
+            with smtplib.SMTP_SSL(host, port) as server:
+                server.login(self.smtp_user, self.smtp_pass)
+                server.send_message(msg)
+        else:
+            with smtplib.SMTP(host, port) as server:
+                server.starttls()
+                server.login(self.smtp_user, self.smtp_pass)
+                server.send_message(msg)
+
+        print("[email] Inviata OK")
 
 
 # ============================================================
@@ -133,283 +149,219 @@ def yf_download(symbol: str, **kwargs) -> pd.DataFrame:
         except Exception as e:
             last_err = e
     if last_err:
-        raise RuntimeError(f"Download fallito per {symbol}: {last_err}")
+        raise last_err
     return pd.DataFrame()
 
-def load_daily_ohlcv(symbol: str) -> pd.DataFrame:
-    df = yf_download(symbol, start=START_DATE, interval="1d")
-    if df is None or df.empty:
-        return pd.DataFrame()
-    df = df.sort_index()
-    out = pd.DataFrame(index=df.index)
-    out["Open"] = extract_col(df, "open")
-    out["High"] = extract_col(df, "high")
-    out["Low"] = extract_col(df, "low")
-    out["Close"] = extract_col(df, "close")
-    out["Volume"] = extract_col(df, "vol")
-    return out
-
-def load_daily_close(symbol: str) -> pd.Series:
-    df = yf_download(symbol, start=START_DATE, interval="1d")
-    if df is None or df.empty:
-        return pd.Series(dtype=float)
-    df = df.sort_index()
-    s = extract_col(df, "close")
-    s.name = "Close"
-    return s
-
-def load_intraday(symbol: str) -> pd.DataFrame:
-    df = yf_download(symbol, period=INTRADAY_PERIOD, interval=INTRADAY_INTERVAL)
-    if df is None or df.empty:
-        return pd.DataFrame()
-    df = df.sort_index()
-    df = to_rome_index(df)
-    out = pd.DataFrame(index=df.index)
-    out["Open"] = extract_col(df, "open")
-    out["High"] = extract_col(df, "high")
-    out["Low"] = extract_col(df, "low")
-    out["Close"] = extract_col(df, "close")
-    out["Volume"] = extract_col(df, "vol") if any("vol" in c.lower() for c in df.columns) else np.nan
-    return out
-
-def intraday_close_at(symbols: list[str], day: dt.date):
-    """
-    Prova una lista di simboli; ritorna (symbol_usato, prezzo, timestamp_rome) per l'ultima barra <= 17:30.
-    """
-    target = target_dt_rome(day)
+def yf_download_with_fallback(symbols: list, **kwargs) -> tuple[pd.DataFrame, str]:
+    last_err = None
     for sym in symbols:
-        intr = load_intraday(sym)
-        if intr is None or intr.empty:
-            continue
+        try:
+            df = yf_download(sym, **kwargs)
+            if df is not None and not df.empty:
+                return df, sym
+        except Exception as e:
+            last_err = e
+    raise RuntimeError(f"yfinance fallito per tutti i simboli {symbols}. Ultimo errore: {last_err}")
 
-        intr_day = intr[intr.index.date == day]
-        if intr_day.empty:
-            continue
 
-        upto = intr_day[intr_day.index <= target]
-        if upto.empty:
-            # fallback: ultimo tick disponibile del giorno
-            ts = intr_day.index.max()
-            px = float(intr_day.loc[ts, "Close"])
-            return sym, px, ts
-
-        ts = upto.index.max()
-        px = float(upto.loc[ts, "Close"])
-        return sym, px, ts
-
-    return None, None, None
-
-def synth_daily_from_intraday(symbol: str, day: dt.date):
-    """
-    Crea una riga daily usando dati intraday del giorno (fino a 17:30 Rome per Close).
-    Ritorna (row_series, ts_close_rome) oppure (None, None).
-    """
-    target = target_dt_rome(day)
-    intr = load_intraday(symbol)
-    if intr is None or intr.empty:
-        return None, None
-
-    intr_day = intr[intr.index.date == day]
-    if intr_day.empty:
-        return None, None
-
-    open_px = float(intr_day.iloc[0]["Open"])
-    high_px = float(intr_day["High"].max())
-    low_px = float(intr_day["Low"].min())
-
-    upto = intr_day[intr_day.index <= target]
-    if upto.empty:
-        close_ts = intr_day.index.max()
-        close_px = float(intr_day.loc[close_ts, "Close"])
-    else:
-        close_ts = upto.index.max()
-        close_px = float(upto.loc[close_ts, "Close"])
-
-    vol = float(intr_day["Volume"].fillna(0).sum()) if "Volume" in intr_day.columns else np.nan
-
-    row = pd.Series(
-        {"Open": open_px, "High": high_px, "Low": low_px, "Close": close_px, "Volume": vol},
-        name=pd.Timestamp(day)
+# ============================================================
+# DATA FETCH
+# ============================================================
+def get_ftse_intraday(today: dt.date) -> tuple[pd.DataFrame, str]:
+    # FTSEMIB: su yfinance spesso ^FTMIB o FTSEMIB.MI
+    symbols = ["FTSEMIB.MI", "^FTMIB"]
+    df, sym = yf_download_with_fallback(
+        symbols,
+        period="5d",
+        interval="1m",
     )
-    return row, close_ts
+    df = to_rome_index(df)
+    return df, sym
+
+def get_spy_intraday() -> tuple[pd.DataFrame, str]:
+    symbols = ["SPY"]
+    df, sym = yf_download_with_fallback(
+        symbols,
+        period="5d",
+        interval="1m",
+    )
+    df = to_rome_index(df)
+    return df, sym
+
+def get_vix_intraday() -> tuple[pd.DataFrame, str]:
+    # VIX su Yahoo: ^VIX
+    symbols = ["^VIX"]
+    df, sym = yf_download_with_fallback(
+        symbols,
+        period="5d",
+        interval="1m",
+    )
+    df = to_rome_index(df)
+    return df, sym
 
 
 # ============================================================
-# DATASET BUILD
+# SNAPSHOT LOGIC
 # ============================================================
-def build_dataset():
-    meta = {
-        "today_rome": str(today_rome()),
-        "ftse_source_today": "daily",
-        "ftse_close_ts_rome": None,
-        "spy_symbol_used": None,
-        "spy_snapshot_ts_rome": None,
-        "vix_symbol_used": None,
-        "vix_snapshot_ts_rome": None,
-    }
-
-    day = today_rome()
-
-    # FTSEMIB daily history
-    df = load_daily_ohlcv("FTSEMIB.MI")
+def pick_last_before(df: pd.DataFrame, t_end: dt.datetime) -> tuple[dt.datetime, float]:
     if df is None or df.empty:
-        raise RuntimeError("Nessun dato FTSEMIB disponibile")
-
+        raise RuntimeError("DataFrame vuoto")
     df = df.sort_index()
+    df = df[df.index <= t_end]
+    if df.empty:
+        raise RuntimeError("Nessun dato <= snapshot target")
+    close = extract_col(df, "close")
+    ts = close.index[-1]
+    val = float(close.iloc[-1])
+    return ts.to_pydatetime(), val
 
-    # Prova sempre a costruire la riga di oggi da intraday (real-time)
-    ftse_row, ftse_ts = synth_daily_from_intraday("FTSEMIB.MI", day)
-    if ftse_row is not None:
-        meta["ftse_source_today"] = "intraday_synth"
-        meta["ftse_close_ts_rome"] = str(ftse_ts)
-        df.loc[pd.Timestamp(day)] = ftse_row.values
-        df = df.sort_index()
-
-    # SPY / VIX daily close history (per prendere la close di ieri)
-    spy_close = load_daily_close("SPY")
-    vix_close = load_daily_close("^VIX")
-
-    df["spy_close"] = spy_close.reindex(df.index) if spy_close is not None else np.nan
-    df["vix_close"] = vix_close.reindex(df.index) if vix_close is not None else np.nan
-
-    df["spy_ret"] = df["spy_close"].pct_change()
-    df["vix_ret"] = df["vix_close"].pct_change()
-
-    # Override OGGI: snapshot intraday alle 17:30 (Rome) anche senza chiusura USA
-    # SPY
-    prev_spy = df.loc[df.index < pd.Timestamp(day), "spy_close"].dropna()
-    if not prev_spy.empty:
-        prev_close = float(prev_spy.iloc[-1])
-        sym, px, ts = intraday_close_at(["SPY"], day)
-        if px is not None and prev_close > 0:
-            df.loc[pd.Timestamp(day), "spy_ret"] = (float(px) / prev_close) - 1.0
-            meta["spy_symbol_used"] = sym
-            meta["spy_snapshot_ts_rome"] = str(ts)
-
-    # VIX: ^VIX intraday spesso è instabile; fallback su ETF proxy
-    prev_vix = df.loc[df.index < pd.Timestamp(day), "vix_close"].dropna()
-    if not prev_vix.empty:
-        prev_close = float(prev_vix.iloc[-1])
-        sym, px, ts = intraday_close_at(["^VIX", "VIXY", "VXX"], day)
-        if px is not None and prev_close > 0:
-            df.loc[pd.Timestamp(day), "vix_ret"] = (float(px) / prev_close) - 1.0
-            meta["vix_symbol_used"] = sym
-            meta["vix_snapshot_ts_rome"] = str(ts)
-
-    # Feature FTSE
-    df["Close_prev"] = df["Close"].shift(1)
-    df["gap_open"] = df["Open"] / df["Close_prev"] - 1
-
-    df["vol_ma"] = df["Volume"].rolling(20).mean()
-    df["vol_std"] = df["Volume"].rolling(20).std()
-    df["vol_z"] = (df["Volume"] - df["vol_ma"]) / df["vol_std"]
-
-    df["dow"] = df.index.dayofweek
-
-    return df, meta
-
-
-# ============================================================
-# STRATEGIA (TOP3)
-# ============================================================
-def match_top3(r):
-    cond = False
-
-    if not pd.isna(r.get("spy_ret")):
-        cond |= (0 <= r["gap_open"] < 0.01) and (0 <= r["spy_ret"] < 0.01)
-
-    if not pd.isna(r.get("vix_ret")):
-        cond |= (-0.10 <= r["vix_ret"] < -0.05)
-
-    cond |= (-1.5 <= r["vol_z"] < -0.5)
-
-    return cond
-
-
-def filters(r):
-    if not pd.isna(r.get("spy_ret")) and r["spy_ret"] < -0.005:
-        return False
-    if r["dow"] not in ALLOWED_DAYS:
-        return False
-    return True
-
-
-# ============================================================
-# SEGNALE LIVE (oggi incluso)
-# ============================================================
-def get_next_overnight_signal(df):
-    day = today_rome()
-
-    # NON richiedere spy_ret/vix_ret non-NaN: la riga di oggi deve sopravvivere.
-    df_live = df.dropna(subset=["gap_open", "vol_z", "dow"]).copy()
-    if df_live.empty:
-        raise RuntimeError("ERRORE: Nessun dato valido dopo dropna(gap_open, vol_z, dow)")
-
-    last_row = df_live.iloc[-1]
-    last_date = df_live.index[-1].date()
-
-    if last_date > day:
-        raise RuntimeError(f"ERRORE: data piu recente ({last_date}) non è chiusa")
-
-    signal = match_top3(last_row) and filters(last_row)
-
-    debug = {
-        "ref_date": str(last_date),
-        "gap_open": float(last_row["gap_open"]),
-        "vol_z": float(last_row["vol_z"]),
-        "spy_ret": None if pd.isna(last_row.get("spy_ret")) else float(last_row.get("spy_ret")),
-        "vix_ret": None if pd.isna(last_row.get("vix_ret")) else float(last_row.get("vix_ret")),
-        "dow": int(last_row["dow"]),
+def compute_returns(ftse_close: float, ftse_prev_close: float,
+                    spy_close: float, spy_prev_close: float,
+                    vix_close: float, vix_prev_close: float) -> dict:
+    gap_open = (ftse_close / ftse_prev_close) - 1.0 if ftse_prev_close else np.nan
+    spy_ret = (spy_close / spy_prev_close) - 1.0 if spy_prev_close else np.nan
+    vix_ret = (vix_close / vix_prev_close) - 1.0 if vix_prev_close else np.nan
+    return {
+        "gap_open": float(gap_open),
+        "spy_ret": float(spy_ret),
+        "vix_ret": float(vix_ret),
     }
 
-    return last_date, signal, debug
+def get_prev_close(df: pd.DataFrame, day: dt.date) -> float:
+    # prende l'ultimo close del giorno precedente (in orario Rome)
+    df = df.sort_index()
+    prev_day = day - dt.timedelta(days=1)
+    mask = (df.index.date == prev_day)
+    if not mask.any():
+        # fallback: prende il penultimo giorno disponibile
+        days = sorted(set(df.index.date))
+        if len(days) < 2:
+            raise RuntimeError("Non ci sono abbastanza giorni per prev_close")
+        prev_day = days[-2]
+        mask = (df.index.date == prev_day)
+    close = extract_col(df[mask], "close")
+    return float(close.iloc[-1])
+
+def day_of_week(day: dt.date) -> int:
+    return dt.datetime.combine(day, dt.time(12, 0)).weekday()
+
+def decide_signal(features: dict, dow: int) -> str:
+    # Strategia semplice dimostrativa:
+    # - se VIX spike > +4.75% => SHORT
+    # - se VIX spike < -4.75% => LONG
+    # - altrimenti FLAT
+    if dow not in ALLOWED_DAYS:
+        return "FLAT"
+    vix_ret = features.get("vix_ret", 0.0)
+    if vix_ret >= 0.0475:
+        return "SHORT"
+    if vix_ret <= -0.0475:
+        return "LONG"
+    return "FLAT"
+
+
+# ============================================================
+# FORMATTING
+# ============================================================
+def fmt_pct(x: float) -> str:
+    if x is None or (isinstance(x, float) and (np.isnan(x) or np.isinf(x))):
+        return "n/a"
+    return f"{float(x)*100:.3f}%"
+
+def fmt_price(x: float) -> str:
+    if x is None or (isinstance(x, float) and (np.isnan(x) or np.isinf(x))):
+        return "n/a"
+    return f"{float(x):.4f}"
+
+def build_email_body(run_ts: dt.datetime,
+                     snapshot_target: dt.datetime,
+                     reference_date: dt.date,
+                     signal: str,
+                     debug: dict) -> str:
+    lines = []
+    lines.append("=== LIVE SIGNAL @ SNAPSHOT ===")
+    lines.append(f"Run time (Rome):        {run_ts}")
+    lines.append(f"Snapshot target (Rome): {snapshot_target}")
+    lines.append(f"Reference date (FTSE):  {reference_date}")
+    lines.append(f"Signal:                 {signal}")
+    lines.append("")
+    lines.append("--- DATA USED (debug) ---")
+    for k, v in debug.get("data_used", {}).items():
+        lines.append(f"{k:<10} {v}")
+    lines.append("")
+    lines.append("--- SNAPSHOT SOURCES ---")
+    for k, v in debug.get("sources", {}).items():
+        lines.append(f"{k:<20} {v}")
+    lines.append("")
+    return "\n".join(lines)
 
 
 # ============================================================
 # MAIN
 # ============================================================
 def main():
-    # Se siamo fuori finestra (doppio cron), esci senza mandare mail
+    run_ts = now_rome()
     if not should_run_now():
-        print(f"[skip] Ora Rome={now_rome()} fuori finestra {RUN_WINDOW_START}-{RUN_WINDOW_END}.")
+        print(f"[skip] Ora Rome={run_ts.time()} fuori finestra {RUN_WINDOW_START}-{RUN_WINDOW_END}.")
         return
 
-    mailer = EmailClient()
+    ref_day = today_rome()
+    dow = day_of_week(ref_day)
 
-    df, meta = build_dataset()
-    ref_date, signal, dbg = get_next_overnight_signal(df)
+    snapshot_target = target_dt_rome(ref_day)
 
-    status = "LONG" if signal else "FLAT"
-    subject = f"FAI QUANT SUPERIOR – Overnight {status}"
+    # Fetch data
+    ftse_df, ftse_sym = get_ftse_intraday(ref_day)
+    spy_df, spy_sym = get_spy_intraday()
+    vix_df, vix_sym = get_vix_intraday()
 
-    body = f"""
-FAI QUANT SUPERIOR – SEGNALE OVERNIGHT (snapshot <= 17:30 Europe/Rome)
+    # Snapshot prices
+    ftse_ts, ftse_close = pick_last_before(ftse_df, snapshot_target)
+    spy_ts, spy_close = pick_last_before(spy_df, snapshot_target)
+    vix_ts, vix_close = pick_last_before(vix_df, snapshot_target)
 
-Esecuzione (Rome): {now_rome()}
-Seduta di riferimento (FTSE): {ref_date}
-Fonte FTSE oggi: {meta.get("ftse_source_today")}
-FTSE close timestamp (Rome): {meta.get("ftse_close_ts_rome")}
+    # Previous closes (day-1)
+    ftse_prev_close = get_prev_close(ftse_df, ref_day)
+    spy_prev_close = get_prev_close(spy_df, ref_day)
+    vix_prev_close = get_prev_close(vix_df, ref_day)
 
-SPY symbol: {meta.get("spy_symbol_used")}
-SPY snapshot timestamp (Rome): {meta.get("spy_snapshot_ts_rome")}
+    feats = compute_returns(
+        ftse_close=ftse_close, ftse_prev_close=ftse_prev_close,
+        spy_close=spy_close, spy_prev_close=spy_prev_close,
+        vix_close=vix_close, vix_prev_close=vix_prev_close,
+    )
 
-VIX symbol: {meta.get("vix_symbol_used")}
-VIX snapshot timestamp (Rome): {meta.get("vix_snapshot_ts_rome")}
+    signal = decide_signal(feats, dow=dow)
 
-Segnale valido per il prossimo overnight utile
-Segnale: {status}
+    debug = {
+        "data_used": {
+            "dow:": f"{dow}   (0=Lun ... 6=Dom)",
+            "gap_open:": fmt_pct(feats["gap_open"]),
+            "spy_ret:": fmt_pct(feats["spy_ret"]),
+            "vix_ret:": fmt_pct(feats["vix_ret"]),
+        },
+        "sources": {
+            "FTSE symbol used:": ftse_sym,
+            "FTSE close ts (Rome):": ftse_ts,
+            "SPY symbol used:": spy_sym,
+            "SPY price ts (Rome):": spy_ts,
+            "VIX symbol used:": vix_sym,
+            "VIX price ts (Rome):": vix_ts,
+        }
+    }
 
---- DEBUG (valori usati) ---
-gap_open: {dbg["gap_open"]:+.6f}
-vol_z:    {dbg["vol_z"]:+.6f}
-spy_ret:  {("NA" if dbg["spy_ret"] is None else f"{dbg['spy_ret']:+.6f}")}
-vix_ret:  {("NA" if dbg["vix_ret"] is None else f"{dbg['vix_ret']:+.6f}")}
-dow:      {dbg["dow"]}
-"""
+    subject = f"FAI-QUANT-SUPERIOR | {ref_day} | SIGNAL: {signal}"
+    body = build_email_body(
+        run_ts=run_ts,
+        snapshot_target=snapshot_target,
+        reference_date=ref_day,
+        signal=signal,
+        debug=debug
+    )
 
-    print(body)
-    mailer.send(subject, body)
-
+    # send email
+    EmailClient().send(subject, body)
+    print("[ok] Email inviata.")
 
 if __name__ == "__main__":
     main()
