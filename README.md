@@ -5,7 +5,7 @@
 **Status**: ✅ Operativo con GitHub Actions  
 **Notifiche**: 📧 Email (Gmail SMTP)  
 **Esecuzione**: Automatica ogni giorno feriale alle 19:00 CET via GitHub Actions  
-**Email ricevente**: pioggiamarrone@gmail.com  
+
 
 ---
 
