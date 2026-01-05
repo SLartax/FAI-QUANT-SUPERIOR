@@ -1,13 +1,1 @@
-name: Manual Blank Workflow
 
-on:
-  workflow_dispatch:
-
-jobs:
-  noop:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Manual run confirmation
-        run: |
-          echo "This workflow runs only when manually triggered (workflow_dispatch)."
-          echo "No scheduled/push triggers are enabled."
