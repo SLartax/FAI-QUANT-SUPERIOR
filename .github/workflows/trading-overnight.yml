@@ -3,11 +3,17 @@ name: FAI-QUANT-SUPERIOR Overnight Signal (Email)
 on:
   schedule:
     # GitHub cron è sempre in UTC.
-    # Per avere 17:40 Europe/Rome sia in CEST (UTC+2) sia in CET (UTC+1),
-    # scheduliamo 2 trigger e lo script esce se non è nell'orario giusto.
-    - cron: '40 15 * * 1-5'  # 17:40 Europe/Rome quando siamo in CEST
-    - cron: '40 16 * * 1-5'  # 17:40 Europe/Rome quando siamo in CET
+    # 17:40 Europe/Rome:
+    # - in CEST (UTC+2) -> 15:40 UTC
+    # - in CET  (UTC+1) -> 16:40 UTC
+    - cron: "40 15 * * 1-5"
+    - cron: "40 16 * * 1-5"
   workflow_dispatch:
+    inputs:
+      force_run:
+        description: "1 = forza esecuzione anche fuori finestra oraria"
+        required: false
+        default: "0"
 
 jobs:
   overnight:
@@ -15,13 +21,14 @@ jobs:
     timeout-minutes: 10
 
     steps:
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@v4
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.10'
+          python-version: "3.11"
+          cache: "pip"
 
       - name: Install dependencies
         run: |
@@ -34,10 +41,14 @@ jobs:
           SMTP_PORT: ${{ secrets.SMTP_PORT || '587' }}
           SMTP_USER: ${{ secrets.SMTP_USER }}
           SMTP_PASS: ${{ secrets.SMTP_PASS }}
-         EMAIL_TO: ${{ secrets.EMAIL_TO || 'studiolegaleartax@gmail.com' }}
+          EMAIL_TO: ${{ secrets.EMAIL_TO || 'studiolegaleartax@gmail.com' }}
           EMAIL_FROM_NAME: FAI-QUANT-SUPERIOR
           TZ: Europe/Rome
+          FORCE_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.force_run || '0' }}
+          PYTHONUNBUFFERED: "1"
         run: |
           echo "=== FAI QUANT SUPERIOR OVERNIGHT ==="
-          echo "Execution time (Rome): $(TZ=Europe/Rome date)"
+          echo "UTC now:  $(date -u)"
+          echo "Rome now: $(TZ=Europe/Rome date)"
           python trading_system.py
+
