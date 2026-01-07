@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
   schedule:
     # 19:00 Europe/Rome circa = 18:00 UTC (in inverno). In estate può slittare di 1h.
-    - cron: "0 18 * * 1-5"
+    - cron: "40 16 * * 1-5"
   push:
     branches: ["main"]
 
