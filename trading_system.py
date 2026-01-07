@@ -482,8 +482,8 @@ SEGNALE: {signal_text}
 dow: {int(liverow['dow'])} (0=Lun ... 4=Ven)
 gap_open: {safe_float(liverow['gap_open']):.6f}
 vol_z: {safe_float(liverow['vol_z']):.6f}
-spy_ret: {safe_float(liverow['spy_ret']):.6f if not pd.isna(liverow.get('spy_ret', np.nan)) else 'N/A'}
-vix_ret: {safe_float(liverow['vix_ret']):.6f if not pd.isna(liverow.get('vix_ret', np.nan)) else 'N/A'}
+spy_ret: {f'{safe_float(liverow["spy_ret"]):.6f}' if not pd.isna(liverow.get('spy_ret', np.nan)) else 'N/A'}
+vix_ret: {f'{safe_float(liverow["vix_ret"]):.6f}' if not pd.isna(liverow.get('vix_ret', np.nan)) else 'N/A'}
 
 --- BACKTEST METRICS (overnight, Venerdì escluso) ---
 Trades: {len(trades)}
