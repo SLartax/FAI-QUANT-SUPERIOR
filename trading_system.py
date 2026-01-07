@@ -1,319 +1,436 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-
 """
-trading_system.py
------------------
-Script completo (GitHub Actions friendly) che:
-1) scarica dati (FTSEMIB + VIX) via yfinance (con fallback simboli) oppure da CSV locale se presente
-2) calcola una semplice strategia overnight (contrarian su VIX/FTSE)
-3) produce metriche + equity curve (PNG)
-4) invia una mail (anche con FLAT se SEND_ON_FLAT=1)
+FAI-QUANT-SUPERIOR — TOP3 PATTERN (GitHub Actions compatible)
+Versione adattata da quant_superior.py per esecuzione automatica con email.
 
-ENV richieste per email (GitHub Secrets):
-- SMTP_HOST   (es. smtp.gmail.com)
-- SMTP_PORT   (es. 587) [opzionale, default 587]
-- SMTP_USER   (tuo gmail)
-- SMTP_PASS   (App Password gmail)
-- EMAIL_TO    (destinatario, es. studiolegaleartax@gmail.com)
-- EMAIL_FROM_NAME (opzionale)
+Logica trading:
+- TOP3 PATTERN: gap piccolo positivo + SPY leggermente positivo + VIX in calo + volume sotto media
+- Esclusione venerdì
+- Dati intraday sintetici per previsione live
 
-ENV strategia (opzionali):
-- VIX_TH      (default 0.03 = 3%)
-- FTSE_TH     (default 0.002 = 0.2%)
-- SEND_ON_FLAT (default "1")  -> se "0" non invia mail quando FLAT
-- LOOKBACK_YEARS (default 8)
-- LOCAL_FTSE_CSV (default "FTSEMIB_D.csv")
-- LOCAL_VIX_CSV  (default "VIX_D.csv")
-
-Dipendenze (requirements.txt):
-- pandas
-- numpy
-- matplotlib
-- yfinance
+Dipendenze: numpy, pandas, yfinance, matplotlib
 """
-
-from __future__ import annotations
 
 import os
 import sys
-import math
-import traceback
 import smtplib
-from dataclasses import dataclass
-from datetime import datetime, timezone
+import traceback
+import warnings
+from datetime import datetime, date, timedelta, time
 from email.message import EmailMessage
 from pathlib import Path
-from typing import Optional, Tuple, List
 
 import numpy as np
 import pandas as pd
-
-# Headless plotting (GitHub Actions)
+import yfinance as yf
 import matplotlib
-matplotlib.use("Agg")
+matplotlib.use("Agg")  # Headless
 import matplotlib.pyplot as plt
 
-try:
-    import yfinance as yf
-except Exception:
-    yf = None
+warnings.filterwarnings("ignore")
 
-
-# =========================
-# Config / Utils
-# =========================
-
-TZ_NAME = os.getenv("TZ", "Europe/Rome")  # GitHub Actions: set TZ=Europe/Rome nel workflow
+# Timezone
 try:
     from zoneinfo import ZoneInfo
-    TZ = ZoneInfo(TZ_NAME)
+    TZ = ZoneInfo("Europe/Rome")
 except Exception:
-    TZ = timezone.utc  # fallback (non dovrebbe mai servire)
+    TZ = None
 
-def now_rome() -> datetime:
-    return datetime.now(tz=TZ)
+# Costanti
+START_DATE = "2010-01-01"
+ALLOWED_DAYS = [0, 1, 2, 3]  # Lun-Gio (venerdì escluso)
 
-def f(x) -> float:
-    """Cast robusto a float built-in (per evitare numpy scalar nei print)."""
+# ========== UTILITY =========="
+
+def now_rome():
+    try:
+        if TZ is not None:
+            return datetime.now(TZ)
+    except Exception:
+        pass
+    return datetime.now()
+
+def next_weekday(d: date) -> date:
+    """Prossimo giorno lavorativo (lun-ven)."""
+    nd = d + timedelta(days=1)
+    while nd.weekday() >= 5:
+        nd += timedelta(days=1)
+    return nd
+
+def safe_float(x):
     try:
         return float(x)
     except Exception:
-        return float("nan")
+        return float(np.asarray(x).item())
 
-def pct(x) -> str:
-    if x is None or (isinstance(x, float) and (math.isnan(x) or math.isinf(x))):
-        return "n/a"
-    return f"{f(x)*100:.3f}%"
+def rome_ts_label(ts):
+    if ts is None:
+        return "N/A"
+    try:
+        return ts.isoformat()
+    except Exception:
+        return str(ts)
 
-def ensure_cols(df: pd.DataFrame, cols: List[str], name: str):
-    missing = [c for c in cols if c not in df.columns]
-    if missing:
-        raise ValueError(f"{name}: colonne mancanti {missing}. Colonne presenti: {list(df.columns)}")
+# ========== YAHOO FINANCE UTILITIES ==========
 
+def fix_yahoo_df(df):
+    if df is None or df.empty:
+        return df
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = ["".join(str(x) for x in col) for col in df.columns]
+    else:
+        df.columns = [str(c) for c in df.columns]
+    return df
 
-@dataclass
-class Metrics:
-    n_trades: int
-    winrate: float
-    avg_trade: float
-    total_return: float
-    max_drawdown: float
+def extract_single_close(df):
+    cols_low = [c.lower() for c in df.columns]
+    for t in ["close", "adj close"]:
+        if t in cols_low:
+            return df[df.columns[cols_low.index(t)]]
+    for i, c in enumerate(cols_low):
+        if "close" in c:
+            return df[df.columns[i]]
+    for c in df.columns:
+        if np.issubdtype(df[c].dtype, np.number):
+            return df[c]
+    raise RuntimeError("Nessuna colonna Close trovata.")
 
+def ensure_dt_index(df):
+    if df is None or df.empty:
+        return df
+    if not isinstance(df.index, pd.DatetimeIndex):
+        df.index = pd.to_datetime(df.index)
+    return df
 
-# =========================
-# Data loading
-# =========================
+def to_rome_tz(df):
+    if df is None or df.empty:
+        return df
+    df = ensure_dt_index(df)
+    idx = df.index
+    try:
+        if isinstance(idx, pd.DatetimeIndex):
+            if idx.tz is None:
+                idx = idx.tz_localize("UTC")
+            if TZ is not None:
+                idx = idx.tz_convert(TZ)
+            else:
+                idx = idx.tz_localize(None)
+            df.index = idx
+    except Exception:
+        pass
+    return df
 
-def _read_local_csv(path: Path, name: str) -> Optional[pd.DataFrame]:
-    if not path.exists():
+def yf_download_safe(symbol, **kwargs):
+    try:
+        df = yf.download(symbol, progress=False, auto_adjust=False, **kwargs)
+    except Exception:
         return None
-    df = pd.read_csv(path)
-    # Provo diverse possibili colonne data
-    dt_col = None
-    for c in ["Date", "Datetime", "date", "datetime", "timestamp", "time"]:
-        if c in df.columns:
-            dt_col = c
-            break
-    if dt_col is None:
-        raise ValueError(f"{name}: CSV locale {path} senza colonna data riconoscibile (Date/Datetime/...).")
-    df[dt_col] = pd.to_datetime(df[dt_col], errors="coerce")
-    df = df.dropna(subset=[dt_col]).sort_values(dt_col).set_index(dt_col)
-    # Normalizzo colonne OHLC se esistono
-    colmap = {c: c.capitalize() for c in df.columns}
-    df = df.rename(columns=colmap)
+    if df is None or df.empty:
+        return None
+    df = fix_yahoo_df(df)
+    df = df.sort_index()
     return df
 
-def _yf_download_with_fallback(symbols: List[str], start: pd.Timestamp) -> Tuple[str, pd.DataFrame]:
-    if yf is None:
-        raise RuntimeError("yfinance non disponibile. Aggiungi 'yfinance' a requirements.txt oppure usa CSV locali.")
-    last_err = None
-    for sym in symbols:
-        try:
-            df = yf.download(sym, start=start.date().isoformat(), progress=False, auto_adjust=False)
-            if df is None or df.empty:
-                continue
-            df = df.copy()
-            df.index = pd.to_datetime(df.index, utc=True).tz_convert(TZ)
-            # yfinance ritorna spesso colonne multiindex
-            if isinstance(df.columns, pd.MultiIndex):
-                df.columns = [c[0] for c in df.columns]
-            # Standardizza nomi
-            df.columns = [str(c).capitalize() for c in df.columns]
-            ensure_cols(df, ["Open", "High", "Low", "Close"], f"yfinance {sym}")
-            return sym, df
-        except Exception as e:
-            last_err = e
+# ========== DATA LOADERS ==========
+
+def load_daily_ohlcv(symbol, start=START_DATE):
+    df = yf_download_safe(symbol, start=start, interval="1d")
+    if df is None or df.empty:
+        return None
+    c = extract_single_close(df)
+    
+    def find(*words):
+        for w in words:
+            for col in df.columns:
+                if w in col.lower():
+                    return col
+        return None
+    
+    o = find("open")
+    h = find("high")
+    l = find("low")
+    v = find("vol")
+    
+    out = pd.DataFrame(index=df.index)
+    out["Close"] = c
+    if o and h and l:
+        out["Open"] = df[o]
+        out["High"] = df[h]
+        out["Low"] = df[l]
+    else:
+        out["Open"] = out["Close"].shift(1)
+        out["High"] = out[["Open", "Close"]].max(axis=1)
+        out["Low"] = out[["Open", "Close"]].min(axis=1)
+    out["Volume"] = df[v] if v else 0
+    return out.dropna()
+
+def load_intraday_ohlcv(symbol):
+    """Scarica intraday con fallback di intervalli."""
+    attempts = [("1m", "7d"), ("2m", "60d"), ("5m", "60d"), 
+                ("15m", "60d"), ("30m", "60d"), ("60m", "730d")]
+    
+    for interval, period in attempts:
+        df = yf_download_safe(symbol, interval=interval, period=period)
+        if df is None or df.empty:
             continue
-    raise RuntimeError(f"Download yfinance fallito per simboli {symbols}. Ultimo errore: {last_err}")
+        
+        df = to_rome_tz(df)
+        df = fix_yahoo_df(df)
+        
+        try:
+            c = extract_single_close(df)
+        except Exception:
+            continue
+        
+        def find(*words):
+            for w in words:
+                for col in df.columns:
+                    if w in col.lower():
+                        return col
+            return None
+        
+        o = find("open")
+        h = find("high")
+        l = find("low")
+        v = find("vol")
+        
+        if o and h and l:
+            out = pd.DataFrame(index=df.index)
+            out["Open"] = df[o]
+            out["High"] = df[h]
+            out["Low"] = df[l]
+            out["Close"] = c
+            out["Volume"] = df[v] if v else 0
+            out = out.dropna()
+            if not out.empty:
+                return out, interval
+    
+    return None, None
 
-def load_daily_data() -> Tuple[pd.DataFrame, pd.DataFrame, str, str]:
-    """
-    Ritorna:
-    - ftse_df daily OHLC
-    - vix_df daily OHLC
-    - ftse_symbol_usato
-    - vix_symbol_usato
-    """
-    lookback_years = int(os.getenv("LOOKBACK_YEARS", "8"))
-    start = pd.Timestamp(now_rome().date()) - pd.DateOffset(years=lookback_years)
+def synth_bar_for_day_upto(df_intra, day: date, runtime):
+    """Barra sintetica per un giorno fino a runtime."""
+    if df_intra is None or df_intra.empty:
+        return None, None
+    
+    try:
+        sub = df_intra[df_intra.index <= runtime]
+    except Exception:
+        sub = df_intra.copy()
+    
+    if sub.empty:
+        return None, None
+    
+    try:
+        mask = (sub.index.date == day)
+        sub = sub[mask]
+    except Exception:
+        sub = sub.copy()
+    
+    if sub.empty:
+        return None, None
+    
+    bar = {
+        "Open": safe_float(sub["Open"].iloc[0]),
+        "High": safe_float(sub["High"].max()),
+        "Low": safe_float(sub["Low"].min()),
+        "Close": safe_float(sub["Close"].iloc[-1]),
+        "Volume": safe_float(sub["Volume"].sum()) if "Volume" in sub.columns else 0.0
+    }
+    last_ts = sub.index[-1]
+    return bar, last_ts
 
-    local_ftse = Path(os.getenv("LOCAL_FTSE_CSV", "FTSEMIB_D.csv"))
-    local_vix = Path(os.getenv("LOCAL_VIX_CSV", "VIX_D.csv"))
+# ========== TRADING LOGIC ==========
 
-    ftse_df = _read_local_csv(local_ftse, "FTSE")
-    vix_df = _read_local_csv(local_vix, "VIX")
+def match_top3(r):
+    """TOP3 PATTERN: condizioni per segnale LONG."""
+    cond = False
+    if not pd.isna(r.get("spy_ret")):
+        cond = (0 < r["gap_open"] < 0.01 and 
+                0 < r["spy_ret"] < 0.01)
+    if not pd.isna(r.get("vix_ret")):
+        cond = cond and (-0.10 < r["vix_ret"] < -0.05)
+    cond = cond and (-1.5 < r["vol_z"] < -0.5)
+    return cond
 
-    ftse_sym_used = "local_csv"
-    vix_sym_used = "local_csv"
+def filters(r):
+    """Filtri addizionali."""
+    if not pd.isna(r.get("spy_ret")):
+        if r["spy_ret"] < -0.005:
+            return False
+    if int(r["dow"]) not in ALLOWED_DAYS:
+        return False
+    return True
 
-    if ftse_df is None:
-        ftse_candidates = [
-            os.getenv("FTSE_SYMBOL", "FTSEMIB.MI"),
-            "^FTMIB", "FTMIB.MI", "FTSEMIB.MI"
-        ]
-        ftse_sym_used, ftse_df = _yf_download_with_fallback(ftse_candidates, start)
+def build_dataset_history(runtime):
+    """Dataset daily per backtest."""
+    print("Download DAILY FTSEMIB.MI")
+    ftse = load_daily_ohlcv("FTSEMIB.MI", start=START_DATE)
+    if ftse is None or ftse.empty:
+        raise RuntimeError("Errore: nessun dato FTSEMIB da Yahoo daily.")
+    
+    print("Download DAILY SPY + VIX")
+    spy = load_daily_ohlcv("SPY", start=START_DATE)
+    vix = load_daily_ohlcv("^VIX", start=START_DATE)
+    
+    df = ftse.copy()
+    if spy is not None and not spy.empty:
+        df = df.join(spy["Close"].rename("SPY_Close"))
+    if vix is not None and not vix.empty:
+        df = df.join(vix["Close"].rename("VIX_Close"))
+    
+    calday = runtime.date()
+    if hasattr(df.index[-1], "date") and df.index[-1].date() == calday:
+        cutoff = datetime.combine(calday, time(17, 40))
+        if TZ is not None:
+            cutoff = cutoff.replace(tzinfo=TZ)
+        if runtime < cutoff:
+            df = df.iloc[:-1].copy()
+    
+    df["spy_ret"] = df["SPY_Close"].pct_change() if "SPY_Close" in df.columns else np.nan
+    df["vix_ret"] = df["VIX_Close"].pct_change() if "VIX_Close" in df.columns else np.nan
+    df["Close_prev"] = df["Close"].shift(1)
+    df["gap_open"] = (df["Open"] / df["Close_prev"]) - 1
+    df["vol_ma"] = df["Volume"].rolling(20).mean()
+    df["vol_std"] = df["Volume"].rolling(20).std()
+    df["vol_z"] = (df["Volume"] - df["vol_ma"]) / df["vol_std"]
+    df["Open_next"] = df["Open"].shift(-1)
+    df["overnight_ret"] = (df["Open_next"] / df["Close"]) - 1
+    df["dow"] = df.index.dayofweek
+    
+    return df.dropna()
 
-    if vix_df is None:
-        vix_candidates = [
-            os.getenv("VIX_SYMBOL", "^VIX"),
-            "^VIX"
-        ]
-        vix_sym_used, vix_df = _yf_download_with_fallback(vix_candidates, start)
+def build_live_snapshot(history_df, runtime):
+    """Snapshot live con dati intraday sintetici."""
+    calday = runtime.date()
+    
+    if history_df is None or history_df.empty:
+        raise RuntimeError("History DF vuoto")
+    
+    close_prev = safe_float(history_df["Close"].iloc[-1])
+    
+    ftse_intra, ftse_interval = load_intraday_ohlcv("FTSEMIB.MI")
+    ftse_bar, ftse_ts = synth_bar_for_day_upto(ftse_intra, calday, runtime) if ftse_intra is not None else (None, None)
+    ftse_source = "intraday_synth" if ftse_bar is not None else "daily_fallback"
+    
+    if ftse_bar is None:
+        ftse_bar = {
+            "Open": safe_float(history_df["Open"].iloc[-1]),
+            "High": safe_float(history_df["High"].iloc[-1]),
+            "Low": safe_float(history_df["Low"].iloc[-1]),
+            "Close": safe_float(history_df["Close"].iloc[-1]),
+            "Volume": safe_float(history_df["Volume"].iloc[-1])
+        }
+        ftse_ts = None
+    
+    spy_price_now = None
+    spy_prev_close = None
+    if "SPY_Close" in history_df.columns:
+        s = history_df["SPY_Close"].dropna()
+        if not s.empty:
+            spy_prev_close = safe_float(s.iloc[-1])
+    
+    spy_intra, spy_interval = load_intraday_ohlcv("SPY")
+    if spy_intra is not None and spy_prev_close is not None:
+        spy_bar, spy_ts = synth_bar_for_day_upto(spy_intra, calday, runtime)
+        if spy_bar is not None:
+            spy_price_now = safe_float(spy_bar["Close"])
+    
+    if spy_price_now is None and spy_prev_close is not None:
+        spy_price_now = spy_prev_close
+    
+    spy_ret_live = (spy_price_now / spy_prev_close - 1) if spy_price_now and spy_prev_close else np.nan
+    
+    vix_price_now = None
+    vix_prev_close = None
+    if "VIX_Close" in history_df.columns:
+        v = history_df["VIX_Close"].dropna()
+        if not v.empty:
+            vix_prev_close = safe_float(v.iloc[-1])
+    
+    vix_intra, vix_interval = load_intraday_ohlcv("^VIX")
+    if vix_intra is not None and vix_prev_close is not None:
+        vix_bar, vix_ts = synth_bar_for_day_upto(vix_intra, calday, runtime)
+        if vix_bar is not None:
+            vix_price_now = safe_float(vix_bar["Close"])
+    
+    if vix_price_now is None and vix_prev_close is not None:
+        vix_price_now = vix_prev_close
+    
+    vix_ret_live = (vix_price_now / vix_prev_close - 1) if vix_price_now and vix_prev_close else np.nan
+    
+    vol_today = safe_float(ftse_bar.get("Volume", 0.0))
+    vol_ma = safe_float(history_df["Volume"].tail(20).mean()) if "Volume" in history_df.columns else 0.0
+    vol_std = safe_float(history_df["Volume"].tail(20).std()) if "Volume" in history_df.columns else 0.0
+    vol_z_live = (vol_today - vol_ma) / vol_std if vol_std and vol_std > 0 else 0.0
+    
+    live = {
+        "Open": ftse_bar["Open"],
+        "High": ftse_bar["High"],
+        "Low": ftse_bar["Low"],
+        "Close": ftse_bar["Close"],
+        "Volume": vol_today,
+        "Close_prev": close_prev,
+        "gap_open": (ftse_bar["Open"] / close_prev - 1) if close_prev else np.nan,
+        "SPY_Close": spy_price_now,
+        "VIX_Close": vix_price_now,
+        "spy_ret": spy_ret_live,
+        "vix_ret": vix_ret_live,
+        "vol_ma": vol_ma,
+        "vol_std": vol_std,
+        "vol_z": vol_z_live,
+        "dow": calday.weekday()
+    }
+    
+    return pd.Series(live)
 
-    # Allinea a date giornaliere (solo indice date) mantenendo tz
-    ftse_df = ftse_df.sort_index()
-    vix_df = vix_df.sort_index()
+def run_backtest(df):
+    """Backtest con TOP3 PATTERN."""
+    df = df.copy()
+    df["signal"] = df.apply(lambda r: match_top3(r) and filters(r), axis=1)
+    
+    trades = df[df["signal"]].copy()
+    if trades.empty:
+        return trades, pd.Series(dtype=float), 0, 0, 0, 0, 0
+    
+    trades["pnl"] = trades["overnight_ret"]
+    trades["pnl_points"] = trades["overnight_ret"] * trades["Close"]
+    trades["raw_points"] = trades["Open_next"] - trades["Close"]
+    
+    equity = (1 + trades["overnight_ret"]).cumprod()
+    years = (equity.index[-1] - equity.index[0]).days / 365.25
+    cagr = (equity.iloc[-1] ** (1/years)) - 1 if years > 0 else 0
+    avg = trades["overnight_ret"].mean()
+    avgpoints = trades["pnl_points"].mean()
+    win = (trades["overnight_ret"] > 0).mean()
+    
+    return trades, equity, cagr, avg, win, avgpoints, trades["raw_points"].mean()
 
-    # Teniamo solo giorni comuni (per semplicità)
-    common_idx = ftse_df.index.normalize().intersection(vix_df.index.normalize())
-    ftse_df = ftse_df[ftse_df.index.normalize().isin(common_idx)]
-    vix_df = vix_df[vix_df.index.normalize().isin(common_idx)]
+# ========== EMAIL ==========
 
-    if ftse_df.empty or vix_df.empty:
-        raise RuntimeError("Dati vuoti dopo allineamento FTSE/VIX.")
-
-    return ftse_df, vix_df, ftse_sym_used, vix_sym_used
-
-
-# =========================
-# Strategy + Backtest
-# =========================
-
-def compute_signals(ftse: pd.DataFrame, vix: pd.DataFrame) -> pd.DataFrame:
-    """
-    Strategy:
-    - LONG overnight se:  vix_ret >= VIX_TH  e ftse_ret <= -FTSE_TH
-    - SHORT overnight se: vix_ret <= -VIX_TH e ftse_ret >= +FTSE_TH
-    - altrimenti FLAT
-
-    Trade return (overnight): entry Close(t), exit Open(t+1).
-    """
-    vix_th = float(os.getenv("VIX_TH", "0.03"))
-    ftse_th = float(os.getenv("FTSE_TH", "0.002"))
-
-    df = pd.DataFrame(index=ftse.index.copy())
-    df["ftse_close"] = ftse["Close"].astype(float)
-    df["ftse_open"] = ftse["Open"].astype(float)
-    df["vix_close"] = vix["Close"].astype(float)
-
-    df["ftse_ret"] = df["ftse_close"].pct_change()
-    df["vix_ret"] = df["vix_close"].pct_change()
-
-    # Segnale generato a fine giornata t, eseguito overnight t->t+1
-    signal = np.zeros(len(df), dtype=int)  # 1=long, -1=short, 0=flat
-
-    long_mask = (df["vix_ret"] >= vix_th) & (df["ftse_ret"] <= -ftse_th)
-    short_mask = (df["vix_ret"] <= -vix_th) & (df["ftse_ret"] >= ftse_th)
-
-    signal[long_mask.fillna(False).values] = 1
-    signal[short_mask.fillna(False).values] = -1
-
-    df["signal"] = signal
-
-    # Overnight return: from Close(t) to Open(t+1)
-    df["next_open"] = df["ftse_open"].shift(-1)
-    df["overnight_ret_long"] = (df["next_open"] / df["ftse_close"]) - 1.0
-    df["overnight_ret_short"] = (df["ftse_close"] / df["next_open"]) - 1.0  # equivalente a -long su log, approx
-
-    # Trade return applicata al segnale
-    df["trade_ret"] = 0.0
-    df.loc[df["signal"] == 1, "trade_ret"] = df.loc[df["signal"] == 1, "overnight_ret_long"]
-    df.loc[df["signal"] == -1, "trade_ret"] = df.loc[df["signal"] == -1, "overnight_ret_short"]
-
-    # Ultimo giorno non eseguibile (manca next_open)
-    df.loc[df["next_open"].isna(), ["signal", "trade_ret"]] = 0
-
-    # Equity curve
-    df["equity"] = (1.0 + df["trade_ret"].fillna(0.0)).cumprod()
-
-    # Drawdown
-    df["peak"] = df["equity"].cummax()
-    df["drawdown"] = (df["equity"] / df["peak"]) - 1.0
-
-    return df
-
-def compute_metrics(df: pd.DataFrame) -> Metrics:
-    trades = df.loc[df["signal"] != 0, "trade_ret"].dropna()
-    n = int(trades.shape[0])
-    if n == 0:
-        return Metrics(n_trades=0, winrate=0.0, avg_trade=0.0, total_return=f(df["equity"].iloc[-1] - 1.0),
-                       max_drawdown=f(df["drawdown"].min()))
-    winrate = f((trades > 0).mean())
-    avg_trade = f(trades.mean())
-    total_return = f(df["equity"].iloc[-1] - 1.0)
-    max_dd = f(df["drawdown"].min())
-    return Metrics(n_trades=n, winrate=winrate, avg_trade=avg_trade, total_return=total_return, max_drawdown=max_dd)
-
-def plot_equity(df: pd.DataFrame, outpath: Path) -> None:
-    plt.figure(figsize=(11, 5))
-    plt.plot(df.index, df["equity"].values)
-    plt.title("Equity Curve (Overnight)")
-    plt.xlabel("Date")
-    plt.ylabel("Equity (start=1.0)")
-    plt.grid(True, alpha=0.3)
-    plt.tight_layout()
-    plt.savefig(outpath, dpi=160)
-    plt.close()
-
-
-# =========================
-# Email
-# =========================
-
-def send_email(
-    subject: str,
-    body: str,
-    attachment_path: Optional[Path] = None,
-) -> None:
+def send_email(subject: str, body: str, attachment_path=None):
+    """Invia email via Gmail SMTP."""
     smtp_host = os.getenv("SMTP_HOST", "").strip()
     smtp_port = int(os.getenv("SMTP_PORT", "587"))
     smtp_user = os.getenv("SMTP_USER", "").strip()
     smtp_pass = os.getenv("SMTP_PASS", "").strip()
     email_to = os.getenv("EMAIL_TO", "").strip()
     from_name = os.getenv("EMAIL_FROM_NAME", "FAI-QUANT-SUPERIOR").strip()
-
+    
     if not smtp_host or not smtp_user or not smtp_pass or not email_to:
-        raise RuntimeError(
-            "Variabili email mancanti: SMTP_HOST/SMTP_USER/SMTP_PASS/EMAIL_TO devono essere valorizzate."
-        )
-
+        raise RuntimeError("Variabili email mancanti")
+    
     msg = EmailMessage()
     msg["Subject"] = subject
     msg["From"] = f"{from_name} <{smtp_user}>"
     msg["To"] = email_to
     msg.set_content(body)
-
-    if attachment_path is not None and attachment_path.exists():
-        data = attachment_path.read_bytes()
-        msg.add_attachment(
-            data,
-            maintype="image",
-            subtype="png",
-            filename=attachment_path.name
-        )
-
-    # SMTP with STARTTLS
+    
+    if attachment_path and Path(attachment_path).exists():
+        data = Path(attachment_path).read_bytes()
+        msg.add_attachment(data, maintype="image", subtype="png", 
+                          filename=Path(attachment_path).name)
+    
     with smtplib.SMTP(smtp_host, smtp_port, timeout=30) as server:
         server.ehlo()
         server.starttls()
@@ -321,122 +438,92 @@ def send_email(
         server.login(smtp_user, smtp_pass)
         server.send_message(msg)
 
-
-# =========================
-# Main
-# =========================
-
-def next_business_day(d: pd.Timestamp) -> pd.Timestamp:
-    # Approx: business day (non gestisce festività italiane, ma va bene per report)
-    return (d.normalize() + pd.offsets.BDay(1)).normalize()
-
-def build_report(
-    df: pd.DataFrame,
-    metrics: Metrics,
-    ftse_sym: str,
-    vix_sym: str,
-) -> Tuple[str, str]:
-    # Ultimo giorno “completo” (cioè quello usato per generare segnale overnight)
-    # Esempio: segnale basato su t, esecuzione verso t+1
-    usable = df.copy()
-    usable = usable[usable["next_open"].notna()]
-    last_ts = usable.index[-1]
-    last_date = pd.Timestamp(last_ts).tz_convert(TZ).date()
-
-    # Segnale per overnight successivo (basato su last_ts)
-    last_sig = int(usable.loc[last_ts, "signal"])
-    sig_txt = "LONG" if last_sig == 1 else ("SHORT" if last_sig == -1 else "FLAT")
-
-    # Data previsione: prossimo business day (approssimato)
-    pred_day = next_business_day(pd.Timestamp(last_date))
-    pred_day_str = pred_day.date().isoformat()
-
-    # Debug values
-    gap_proxy = f((usable.loc[last_ts, "ftse_open"] / df.loc[last_ts, "ftse_close"] - 1.0))  # solo indicativo
-    vix_ret = f(usable.loc[last_ts, "vix_ret"])
-    ftse_ret = f(usable.loc[last_ts, "ftse_ret"])
-
-    run_time = now_rome().strftime("%Y-%m-%d %H:%M:%S %Z")
-
-    subject = f"FAI-QUANT-SUPERIOR | Signal {sig_txt} | Prediction {pred_day_str}"
-
-    body = (
-        f"=== LIVE SIGNAL REPORT ===\n"
-        f"Run time (Rome):        {run_time}\n"
-        f"Data usata per calcolo: {last_date.isoformat()} (chiusura)\n"
-        f"Previsione per giorno:  {pred_day_str}\n"
-        f"Signal:                 {sig_txt}\n"
-        f"\n"
-        f"--- INPUT (debug) ---\n"
-        f"FTSE symbol: {ftse_sym}\n"
-        f"VIX  symbol: {vix_sym}\n"
-        f"ftse_ret:    {pct(ftse_ret)}\n"
-        f"vix_ret:     {pct(vix_ret)}\n"
-        f"gap_proxy:   {pct(gap_proxy)}\n"
-        f"\n"
-        f"--- BACKTEST METRICS (overnight) ---\n"
-        f"Trades:      {metrics.n_trades}\n"
-        f"Winrate:     {pct(metrics.winrate)}\n"
-        f"Avg trade:   {pct(metrics.avg_trade)}\n"
-        f"Total ret:   {pct(metrics.total_return)}\n"
-        f"Max DD:      {pct(metrics.max_drawdown)}\n"
-    )
-    return subject, body
+# ========== MAIN ==========
 
 def main() -> int:
-    send_on_flat = os.getenv("SEND_ON_FLAT", "1").strip() == "1"
-    out_plot = Path("equity_curve.png")
-
+    runtime = now_rome()
+    
     try:
-        ftse_df, vix_df, ftse_sym, vix_sym = load_daily_data()
-        df = compute_signals(ftse_df, vix_df)
-        metrics = compute_metrics(df)
+        # Backtest
+        df_hist = build_dataset_history(runtime)
+        trades, equity, cagr, avg, winrate, avgpoints, avgraw = run_backtest(df_hist)
+        
+        print("\n=== METRICHE SISTEMA BACKTEST (Venerdì escluso) ===")
+        print(f"Trades: {len(trades)}")
+        print(f"Avg trade: {safe_float(avg)*100:.4f}%")
+        print(f"Avg punti: {safe_float(avgpoints):.2f}")
+        print(f"Avg punti raw: {safe_float(avgraw):.2f}")
+        print(f"Winrate: {safe_float(winrate)*100:.2f}%")
+        print(f"CAGR: {safe_float(cagr)*100:.2f}%")
+        if equity is not None and not equity.empty:
+            print(f"Total Return: {safe_float(equity.iloc[-1] - 1)*100:.2f}%")
+        
+        # Live prediction
+        liverow = build_live_snapshot(df_hist, runtime)
+        calday = runtime.date()
+        forecastday = next_weekday(calday)
+        
+        sig = match_top3(liverow) and filters(liverow)
+        
+        # Costruisci report email
+        signal_text = "LONG overnight" if sig else "FLAT"
+        
+        subject = f"FAI-QUANT-SUPERIOR — {signal_text} — Sessione {forecastday}"
+        
+        body = f"""=== FAI-QUANT-SUPERIOR - TOP3 PATTERN ===
 
-        # Plot equity curve
-        plot_equity(df, out_plot)
+Run time (Rome): {runtime.isoformat()}
+Data usata per calcolo: {calday} (chiusura)
+Sessione prevista: {forecastday}
 
-        # Report + subject
-        subject, body = build_report(df, metrics, ftse_sym, vix_sym)
+SEGNALE: {signal_text}
 
-        # Decide se inviare mail con FLAT:
-        # (qui la inviamo sempre di default, compreso FLAT, perché su GitHub vuoi sempre ricevere la notifica)
-        # Se vuoi disattivare: SEND_ON_FLAT=0
-        # Signal dell'ultimo giorno usabile:
-        usable = df[df["next_open"].notna()]
-        last_sig = int(usable["signal"].iloc[-1]) if not usable.empty else 0
+--- INPUT SEGNALE (dati disponibili al run) ---
+dow: {int(liverow['dow'])} (0=Lun ... 4=Ven)
+gap_open: {safe_float(liverow['gap_open']):.6f}
+vol_z: {safe_float(liverow['vol_z']):.6f}
+spy_ret: {safe_float(liverow['spy_ret']):.6f if not pd.isna(liverow.get('spy_ret', np.nan)) else 'N/A'}
+vix_ret: {safe_float(liverow['vix_ret']):.6f if not pd.isna(liverow.get('vix_ret', np.nan)) else 'N/A'}
 
-        if last_sig == 0 and not send_on_flat:
-            print(body)
-            print("[i] Signal=FLAT e SEND_ON_FLAT=0 -> non invio email. Exit 0.")
-            return 0
+--- BACKTEST METRICS (overnight, Venerdì escluso) ---
+Trades: {len(trades)}
+Avg trade: {safe_float(avg)*100:.4f}%
+Avg punti: {safe_float(avgpoints):.2f}
+Winrate: {safe_float(winrate)*100:.2f}%
+CAGR: {safe_float(cagr)*100:.2f}%
+Total Return: {safe_float(equity.iloc[-1] - 1)*100:.2f}% se equity disponibile
 
-        # Invio email (con allegato equity curve)
-        send_email(subject=subject, body=body, attachment_path=out_plot)
-
-        # Log in console
-        print(body)
-        print("[i] Email inviata correttamente.")
+---
+Sistema: FAI-QUANT-SUPERIOR TOP3 PATTERN
+GitHub Actions run: {os.getenv('GITHUB_SERVER_URL', '')}/{os.getenv('GITHUB_REPOSITORY', '')}/actions/runs/{os.getenv('GITHUB_RUN_ID', '')}
+"""
+        
+        # Invia email
+        send_email(subject=subject, body=body)
+        print("\n[i] Email inviata correttamente.")
+        print(f"\nSEGNALE LIVE: {signal_text}")
+        print(f"Snapshot: {calday} (run) → Sessione: {forecastday}")
+        
         return 0
-
+    
     except Exception as e:
-        # Provo comunque a mandare una mail di errore (se i secrets ci sono)
         tb = traceback.format_exc()
-        err_subject = "FAI-QUANT-SUPERIOR | ERROR in trading_system.py"
-        err_body = (
-            f"Errore durante l'esecuzione del sistema.\n\n"
-            f"Run time (Rome): {now_rome().strftime('%Y-%m-%d %H:%M:%S %Z')}\n"
-            f"Exception: {repr(e)}\n\n"
-            f"Traceback:\n{tb}\n"
-        )
+        err_subject = "FAI-QUANT-SUPERIOR | ERROR"
+        err_body = f"""Errore durante l'esecuzione del sistema.
+
+Run time (Rome): {now_rome().isoformat()}
+Exception: {repr(e)}
+
+Traceback:
+{tb}
+"""
         print(err_body)
         try:
-            send_email(subject=err_subject, body=err_body, attachment_path=None)
+            send_email(subject=err_subject, body=err_body)
             print("[i] Mail di errore inviata.")
         except Exception as mail_err:
             print(f"[!] Impossibile inviare mail di errore: {repr(mail_err)}")
-        # Exit 1 così GitHub Actions segna failure (ma la mail è già partita se possibile)
         return 1
-
 
 if __name__ == "__main__":
     raise SystemExit(main())
