@@ -248,9 +248,7 @@ def match_top3(r):
     if not pd.isna(r.get("spy_ret")):
         cond = (0 < r["gap_open"] < 0.01 and 
                 0 < r["spy_ret"] < 0.01)
-    if not pd.isna(r.get("vix_ret")):
-        cond = cond and (-0.10 < r["vix_ret"] < -0.05)
-    cond = cond and (-1.5 < r["vol_z"] < -0.5)
+    # VIX e VOL_Z rimossi per aumentare numero trade
     return cond
 
 def filters(r):
