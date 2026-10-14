@@ -8,8 +8,9 @@ on:
 permissions:
   contents: read
 
-jobs:
+jobs: 
   run:
+    if: ${{ false }} # Hard stop: disabled by explicit user request 2026-10-14
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
