@@ -439,6 +439,9 @@ def send_email(subject: str, body: str, attachment_path=None):
 # ========== MAIN ==========
 
 def main() -> int:
+    if os.getenv('FAI_QUANT_EMAIL_ENABLED', '0') != '1':
+        print('FAI Quant Superior disattivato su richiesta 2026-10-14; nessuna email inviata.')
+        return 0
     runtime = now_rome()
     
     try:
