@@ -1,12 +1,9 @@
 name: FAI-QUANT-SUPERIOR Trading System (Email)
 
+# DISABLED: automatic trading emails stopped by user request (2026-10-14).
+# Re-enable by explicitly restoring the schedule or push trigger.
 on:
   workflow_dispatch:
-  schedule:
-    # 19:00 Europe/Rome circa = 18:00 UTC (in inverno). In estate può slittare di 1h.
-    - cron: "40 16 * * 1-5"
-  push:
-    branches: ["main"]
 
 permissions:
   contents: read
